@@ -94,11 +94,17 @@ export interface DailyRoutineStatus {
     routine: Routine;
 }
 export type Timestamp = bigint;
+export interface ReminderOffset {
+    value: bigint;
+    unit: string;
+}
 export interface RoutineUpdate {
     repeatDays?: Array<DayOfWeek>;
     scheduledTime?: string;
     name?: string;
+    reminderEnabled?: boolean;
     description?: string;
+    reminderOffset?: ReminderOffset;
 }
 export interface RoutineLog {
     id: LogId;
@@ -115,7 +121,9 @@ export interface Routine {
     scheduledTime: string;
     name: string;
     createdAt: Timestamp;
+    reminderEnabled: boolean;
     description: string;
+    reminderOffset: ReminderOffset;
 }
 export interface UserProfile {
     name: string;
@@ -129,7 +137,7 @@ export enum UserRole {
 export interface backendInterface {
     _initializeAccessControlWithSecret(userSecret: string): Promise<void>;
     assignCallerUserRole(user: Principal, role: UserRole): Promise<void>;
-    createRoutine(name: string, description: string, scheduledTime: string, repeatDays: Array<DayOfWeek>): Promise<RoutineId>;
+    createRoutine(name: string, description: string, scheduledTime: string, repeatDays: Array<DayOfWeek>, reminderEnabled: boolean, reminderOffset: ReminderOffset): Promise<RoutineId>;
     deleteRoutine(id: RoutineId): Promise<void>;
     getAllRoutines(): Promise<Array<Routine>>;
     getCallerUserProfile(): Promise<UserProfile | null>;
@@ -142,8 +150,9 @@ export interface backendInterface {
     logRoutine(routineId: RoutineId, date: string, status: string): Promise<LogId>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
     updateRoutine(id: RoutineId, updates: RoutineUpdate): Promise<void>;
+    updateRoutineLogStatus(routineId: RoutineId, date: string, newStatus: string): Promise<void>;
 }
-import type { DailyRoutineStatus as _DailyRoutineStatus, DayOfWeek as _DayOfWeek, Routine as _Routine, RoutineUpdate as _RoutineUpdate, UserProfile as _UserProfile, UserRole as _UserRole } from "./declarations/backend.did.d.ts";
+import type { DailyRoutineStatus as _DailyRoutineStatus, DayOfWeek as _DayOfWeek, ReminderOffset as _ReminderOffset, Routine as _Routine, RoutineUpdate as _RoutineUpdate, UserProfile as _UserProfile, UserRole as _UserRole } from "./declarations/backend.did.d.ts";
 export class Backend implements backendInterface {
     constructor(private actor: ActorSubclass<_SERVICE>, private _uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, private _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, private processError?: (error: unknown) => never){}
     async _initializeAccessControlWithSecret(arg0: string): Promise<void> {
@@ -174,17 +183,17 @@ export class Backend implements backendInterface {
             return result;
         }
     }
-    async createRoutine(arg0: string, arg1: string, arg2: string, arg3: Array<DayOfWeek>): Promise<RoutineId> {
+    async createRoutine(arg0: string, arg1: string, arg2: string, arg3: Array<DayOfWeek>, arg4: boolean, arg5: ReminderOffset): Promise<RoutineId> {
         if (this.processError) {
             try {
-                const result = await this.actor.createRoutine(arg0, arg1, arg2, arg3);
+                const result = await this.actor.createRoutine(arg0, arg1, arg2, arg3, arg4, arg5);
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.createRoutine(arg0, arg1, arg2, arg3);
+            const result = await this.actor.createRoutine(arg0, arg1, arg2, arg3, arg4, arg5);
             return result;
         }
     }
@@ -356,6 +365,20 @@ export class Backend implements backendInterface {
             return result;
         }
     }
+    async updateRoutineLogStatus(arg0: RoutineId, arg1: string, arg2: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.updateRoutineLogStatus(arg0, arg1, arg2);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.updateRoutineLogStatus(arg0, arg1, arg2);
+            return result;
+        }
+    }
 }
 function from_candid_DailyRoutineStatus_n7(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: _DailyRoutineStatus): DailyRoutineStatus {
     return from_candid_record_n8(_uploadFile, _downloadFile, value);
@@ -406,18 +429,24 @@ function to_candid_record_n12(_uploadFile: (file: ExternalBlob) => Promise<Uint8
     repeatDays?: Array<DayOfWeek>;
     scheduledTime?: string;
     name?: string;
+    reminderEnabled?: boolean;
     description?: string;
+    reminderOffset?: ReminderOffset;
 }): {
     repeatDays: [] | [Array<_DayOfWeek>];
     scheduledTime: [] | [string];
     name: [] | [string];
+    reminderEnabled: [] | [boolean];
     description: [] | [string];
+    reminderOffset: [] | [_ReminderOffset];
 } {
     return {
         repeatDays: value.repeatDays ? candid_some(value.repeatDays) : candid_none(),
         scheduledTime: value.scheduledTime ? candid_some(value.scheduledTime) : candid_none(),
         name: value.name ? candid_some(value.name) : candid_none(),
-        description: value.description ? candid_some(value.description) : candid_none()
+        reminderEnabled: value.reminderEnabled ? candid_some(value.reminderEnabled) : candid_none(),
+        description: value.description ? candid_some(value.description) : candid_none(),
+        reminderOffset: value.reminderOffset ? candid_some(value.reminderOffset) : candid_none()
     };
 }
 function to_candid_variant_n2(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: UserRole): {

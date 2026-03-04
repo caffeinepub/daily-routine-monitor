@@ -4,10 +4,13 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertTriangle,
+  Bell,
   CalendarDays,
   CheckCircle2,
   ChevronRight,
   Clock,
+  RefreshCw,
+  RotateCcw,
   TrendingUp,
   XCircle,
   Zap,
@@ -17,15 +20,24 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { DailyRoutineStatus } from "../backend.d";
 import {
+  useGetAllRoutines,
   useGetDailyRoutinesWithStatus,
+  useGetRoutineLogs,
   useLogRoutine,
+  useUpdateRoutineLogStatus,
 } from "../hooks/useQueries";
+import { useReminders } from "../hooks/useReminders";
 import {
+  countCompletionsInPeriod,
   formatDateFull,
+  formatFrequencyLabel,
   formatRepeatDays,
   formatTime12h,
   getTodayString,
   groupRoutines,
+  isFrequencyRoutine,
+  parseFrequencyMeta,
+  stripFrequencyMeta,
 } from "../utils/routineHelpers";
 
 interface DashboardPageProps {
@@ -121,12 +133,22 @@ const GROUP_CONFIG = {
 
 type GroupKey = keyof typeof GROUP_CONFIG;
 
+function formatReminderChip(value: bigint, unit: string): string {
+  const n = Number(value);
+  if (unit === "minutes") return `${n} min before`;
+  if (unit === "hours") return `${n}h before`;
+  if (unit === "days") return `${n} day${n !== 1 ? "s" : ""} before`;
+  return "";
+}
+
 function RoutineCard({
   item,
   group,
   index,
   onDone,
   onSkip,
+  onUndo,
+  onMarkDone,
   isLogging,
 }: {
   item: DailyRoutineStatus;
@@ -134,10 +156,13 @@ function RoutineCard({
   index: number;
   onDone: () => void;
   onSkip: () => void;
+  onUndo?: () => void;
+  onMarkDone?: () => void;
   isLogging: boolean;
 }) {
   const config = GROUP_CONFIG[group];
   const canAct = group !== "completed" && group !== "skipped";
+  const displayDescription = stripFrequencyMeta(item.routine.description);
 
   return (
     <motion.div
@@ -164,9 +189,9 @@ function RoutineCard({
             >
               {item.routine.name}
             </h3>
-            {item.routine.description && (
+            {displayDescription && (
               <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-xs">
-                {item.routine.description}
+                {displayDescription}
               </p>
             )}
           </div>
@@ -192,7 +217,24 @@ function RoutineCard({
           {formatRepeatDays(item.routine.repeatDays)}
         </p>
 
-        {/* Action buttons */}
+        {/* Reminder chip */}
+        {item.routine.reminderEnabled && (
+          <div
+            className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium mt-1.5 w-fit"
+            style={{
+              background: "oklch(0.78 0.14 72 / 0.12)",
+              color: "oklch(0.78 0.14 72)",
+            }}
+          >
+            <Bell className="w-2.5 h-2.5" />⏰{" "}
+            {formatReminderChip(
+              item.routine.reminderOffset.value,
+              item.routine.reminderOffset.unit,
+            )}
+          </div>
+        )}
+
+        {/* Action buttons — active tasks */}
         {canAct && (
           <div className="flex items-center gap-2 mt-3">
             <Button
@@ -221,6 +263,58 @@ function RoutineCard({
             </Button>
           </div>
         )}
+
+        {/* Undo button — completed tasks */}
+        {group === "completed" && onUndo && (
+          <div className="flex items-center gap-2 mt-2.5">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isLogging}
+              onClick={onUndo}
+              className="h-6 text-[11px] px-2.5 rounded-lg text-muted-foreground hover:text-foreground border-border/50 hover:border-border opacity-70 hover:opacity-100 transition-opacity"
+              data-ocid={`routine.undo_button.${index + 1}`}
+            >
+              <RotateCcw className="w-2.5 h-2.5 mr-1" />
+              Undo
+            </Button>
+          </div>
+        )}
+
+        {/* Undo + Mark Done buttons — skipped tasks */}
+        {group === "skipped" && (
+          <div className="flex items-center gap-2 mt-2.5">
+            {onUndo && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isLogging}
+                onClick={onUndo}
+                className="h-6 text-[11px] px-2.5 rounded-lg text-muted-foreground hover:text-foreground border-border/50 hover:border-border opacity-70 hover:opacity-100 transition-opacity"
+                data-ocid={`routine.undo_button.${index + 1}`}
+              >
+                <RotateCcw className="w-2.5 h-2.5 mr-1" />
+                Undo
+              </Button>
+            )}
+            {onMarkDone && (
+              <Button
+                size="sm"
+                disabled={isLogging}
+                onClick={onMarkDone}
+                className="h-6 text-[11px] px-2.5 font-semibold rounded-lg"
+                style={{
+                  background: "oklch(0.78 0.14 72)",
+                  color: "oklch(0.12 0.008 260)",
+                }}
+                data-ocid={`routine.done_button.${index + 1}`}
+              >
+                <CheckCircle2 className="w-2.5 h-2.5 mr-1" />
+                Mark Done
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </motion.div>
   );
@@ -231,12 +325,16 @@ function GroupSection({
   items,
   onDone,
   onSkip,
+  onUndo,
+  onMarkDone,
   loggingIds,
 }: {
   groupKey: GroupKey;
   items: DailyRoutineStatus[];
   onDone: (id: bigint) => void;
   onSkip: (id: bigint) => void;
+  onUndo: (id: bigint) => void;
+  onMarkDone: (id: bigint) => void;
   loggingIds: Set<string>;
 }) {
   if (items.length === 0) return null;
@@ -261,6 +359,8 @@ function GroupSection({
             index={i}
             onDone={() => onDone(item.routine.id)}
             onSkip={() => onSkip(item.routine.id)}
+            onUndo={() => onUndo(item.routine.id)}
+            onMarkDone={() => onMarkDone(item.routine.id)}
             isLogging={loggingIds.has(item.routine.id.toString())}
           />
         ))}
@@ -268,6 +368,237 @@ function GroupSection({
     </div>
   );
 }
+
+// ─── Frequency Goal Card ───────────────────────────────────────────────────────
+
+function FrequencyGoalCard({
+  routineId,
+  name,
+  description,
+  scheduledTime,
+  reminderEnabled,
+  reminderOffset,
+  count,
+  period,
+  index,
+  loggingIds,
+  onLog,
+}: {
+  routineId: bigint;
+  name: string;
+  description: string;
+  scheduledTime: string;
+  reminderEnabled: boolean;
+  reminderOffset: { value: bigint; unit: string };
+  count: number;
+  period: "week" | "month";
+  index: number;
+  loggingIds: Set<string>;
+  onLog: (id: bigint) => void;
+}) {
+  const { data: logs = [] } = useGetRoutineLogs(routineId);
+  const completions = countCompletionsInPeriod(logs, period);
+  const pct = Math.min(Math.round((completions / count) * 100), 100);
+  const isComplete = completions >= count;
+  const isLogging = loggingIds.has(routineId.toString());
+  const today = getTodayString();
+  const alreadyLoggedToday = logs.some(
+    (l) => l.date === today && l.status === "completed",
+  );
+  const displayDescription = stripFrequencyMeta(description);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.06, duration: 0.25 }}
+      className="rounded-xl border p-4 bg-card shadow-card-lift"
+      style={{
+        borderColor: isComplete
+          ? "oklch(0.72 0.16 150 / 0.4)"
+          : "oklch(0.78 0.14 72 / 0.25)",
+      }}
+      data-ocid={`frequency.item.${index + 1}`}
+    >
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <RefreshCw
+              className="w-3.5 h-3.5 shrink-0"
+              style={{ color: "oklch(0.78 0.14 72)" }}
+            />
+            <h3 className="font-semibold text-sm text-foreground truncate">
+              {name}
+            </h3>
+          </div>
+          {displayDescription && (
+            <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-xs ml-5">
+              {displayDescription}
+            </p>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Clock className="w-3 h-3 text-muted-foreground" />
+          <span className="text-xs font-mono text-muted-foreground">
+            {formatTime12h(scheduledTime)}
+          </span>
+          {isComplete ? (
+            <Badge
+              className="text-[10px] px-2 py-0 h-5 ml-1"
+              style={{
+                background: "oklch(0.72 0.16 150 / 0.15)",
+                color: "oklch(0.72 0.16 150)",
+                border: "none",
+              }}
+            >
+              ✓ Done for this {period}!
+            </Badge>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Reminder chip */}
+      {reminderEnabled && (
+        <div
+          className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium mt-2 w-fit"
+          style={{
+            background: "oklch(0.78 0.14 72 / 0.12)",
+            color: "oklch(0.78 0.14 72)",
+          }}
+        >
+          <Bell className="w-2.5 h-2.5" />⏰{" "}
+          {formatReminderChip(reminderOffset.value, reminderOffset.unit)}
+        </div>
+      )}
+
+      {/* Progress */}
+      <div className="mt-3 space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {completions} / {count} this {period}
+          </span>
+          <span
+            className="text-xs font-semibold"
+            style={{ color: "oklch(0.78 0.14 72)" }}
+          >
+            {pct}%
+          </span>
+        </div>
+        <Progress
+          value={pct}
+          className="h-1.5 bg-muted"
+          style={
+            {
+              "--progress-foreground": isComplete
+                ? "oklch(0.72 0.16 150)"
+                : "oklch(0.78 0.14 72)",
+            } as React.CSSProperties
+          }
+        />
+      </div>
+
+      {/* Log button */}
+      {!isComplete && (
+        <div className="mt-3">
+          <Button
+            size="sm"
+            disabled={isLogging || alreadyLoggedToday}
+            onClick={() => onLog(routineId)}
+            className="h-7 text-xs px-3 font-semibold rounded-lg"
+            style={
+              alreadyLoggedToday
+                ? {
+                    background: "oklch(0.72 0.16 150 / 0.15)",
+                    color: "oklch(0.72 0.16 150)",
+                  }
+                : {
+                    background: "oklch(0.78 0.14 72)",
+                    color: "oklch(0.12 0.008 260)",
+                  }
+            }
+            data-ocid={`frequency.log_button.${index + 1}`}
+          >
+            {isLogging ? (
+              <>
+                <Zap className="w-3 h-3 mr-1 animate-spin" />
+                Logging...
+              </>
+            ) : alreadyLoggedToday ? (
+              <>
+                <CheckCircle2 className="w-3 h-3 mr-1" />
+                Logged today
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-3 h-3 mr-1" />
+                Log it
+              </>
+            )}
+          </Button>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Frequency Goals Section ───────────────────────────────────────────────────
+
+function FrequencyGoalsSection({
+  dailyRoutines,
+  loggingIds,
+  onLog,
+}: {
+  dailyRoutines: DailyRoutineStatus[];
+  loggingIds: Set<string>;
+  onLog: (id: bigint) => void;
+}) {
+  // Filter to only frequency routines from dailyRoutines
+  const freqItems = dailyRoutines.filter((item) =>
+    isFrequencyRoutine(item.routine),
+  );
+
+  if (freqItems.length === 0) return null;
+
+  return (
+    <div>
+      <div
+        className="flex items-center gap-2 mb-3"
+        style={{ color: "oklch(0.78 0.14 72)" }}
+      >
+        <RefreshCw className="w-4 h-4" />
+        <span className="text-sm font-semibold uppercase tracking-wider">
+          Frequency Goals
+        </span>
+        <span className="text-xs opacity-60">({freqItems.length})</span>
+      </div>
+      <div className="space-y-3">
+        {freqItems.map((item, i) => {
+          const freqMeta = parseFrequencyMeta(item.routine.description);
+          if (!freqMeta) return null;
+          return (
+            <FrequencyGoalCard
+              key={item.routine.id.toString()}
+              routineId={item.routine.id}
+              name={item.routine.name}
+              description={item.routine.description}
+              scheduledTime={item.routine.scheduledTime}
+              reminderEnabled={item.routine.reminderEnabled}
+              reminderOffset={item.routine.reminderOffset}
+              count={freqMeta.count}
+              period={freqMeta.period}
+              index={i}
+              loggingIds={loggingIds}
+              onLog={onLog}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Dashboard Page ────────────────────────────────────────────────────────────
 
 export default function DashboardPage({
   onNavigateToRoutines,
@@ -277,9 +608,18 @@ export default function DashboardPage({
   const [now, setNow] = useState(new Date());
   const [loggingIds, setLoggingIds] = useState<Set<string>>(new Set());
 
-  const { data: routines = [], isLoading } =
+  const { data: allRoutineData = [], isLoading } =
     useGetDailyRoutinesWithStatus(today);
+
+  // Load all routines for reminder checking
+  const { data: allRoutines = [] } = useGetAllRoutines();
+
   const logRoutine = useLogRoutine();
+  const updateRoutineLogStatus = useUpdateRoutineLogStatus();
+
+  // Build DailyRoutineStatus-like objects from allRoutines for reminder hook
+  // We pass the daily routine statuses to useReminders (contains status info)
+  useReminders(allRoutineData);
 
   // Refresh grouping every minute
   useEffect(() => {
@@ -287,9 +627,13 @@ export default function DashboardPage({
     return () => clearInterval(interval);
   }, []);
 
-  const groups = groupRoutines(routines, now);
+  // Separate frequency routines from fixed-day routines
+  const fixedDayRoutines = allRoutineData.filter(
+    (item) => !isFrequencyRoutine(item.routine),
+  );
+  const groups = groupRoutines(fixedDayRoutines, now);
 
-  const total = routines.length;
+  const total = fixedDayRoutines.length;
   const completedCount = groups.completed.length;
   const progressPct =
     total > 0 ? Math.round((completedCount / total) * 100) : 0;
@@ -318,6 +662,54 @@ export default function DashboardPage({
     [logRoutine, today],
   );
 
+  const handleUndo = useCallback(
+    async (routineId: bigint) => {
+      const idStr = routineId.toString();
+      setLoggingIds((prev) => new Set([...prev, idStr]));
+      try {
+        await updateRoutineLogStatus.mutateAsync({
+          routineId,
+          date: today,
+          newStatus: "pending",
+        });
+        toast.success("Routine moved back to active ↩");
+      } catch {
+        toast.error("Failed to undo. Try again.");
+      } finally {
+        setLoggingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(idStr);
+          return next;
+        });
+      }
+    },
+    [updateRoutineLogStatus, today],
+  );
+
+  const handleMarkDone = useCallback(
+    async (routineId: bigint) => {
+      const idStr = routineId.toString();
+      setLoggingIds((prev) => new Set([...prev, idStr]));
+      try {
+        await updateRoutineLogStatus.mutateAsync({
+          routineId,
+          date: today,
+          newStatus: "completed",
+        });
+        toast.success("Great job! Routine marked as completed ✓");
+      } catch {
+        toast.error("Failed to mark done. Try again.");
+      } finally {
+        setLoggingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(idStr);
+          return next;
+        });
+      }
+    },
+    [updateRoutineLogStatus, today],
+  );
+
   const greeting = () => {
     const h = new Date().getHours();
     if (h < 12) return "Good morning";
@@ -326,6 +718,11 @@ export default function DashboardPage({
   };
 
   const urgentCount = groups.overdue.length + groups["due-soon"].length;
+
+  const hasAnyContent = allRoutineData.length > 0;
+
+  // Suppress allRoutines unused warning — it's used for reminder context
+  void allRoutines;
 
   return (
     <div className="min-h-screen pb-20 md:pb-8" data-ocid="dashboard.section">
@@ -376,30 +773,32 @@ export default function DashboardPage({
                   {urgentCount} need{urgentCount === 1 ? "s" : ""} attention
                 </div>
               )}
-              <div className="flex items-center gap-2">
-                <TrendingUp
-                  className="w-4 h-4"
-                  style={{ color: "oklch(0.78 0.14 72)" }}
-                />
-                <span className="text-sm font-medium text-foreground">
-                  {completedCount} / {total} done today
-                </span>
-              </div>
-              <div className="w-40 md:w-48">
-                <Progress
-                  value={progressPct}
-                  className="h-2 bg-muted"
-                  style={
-                    {
-                      "--progress-foreground": "oklch(0.78 0.14 72)",
-                    } as React.CSSProperties
-                  }
-                />
-              </div>
               {total > 0 && (
-                <span className="text-xs text-muted-foreground">
-                  {progressPct}% complete
-                </span>
+                <>
+                  <div className="flex items-center gap-2">
+                    <TrendingUp
+                      className="w-4 h-4"
+                      style={{ color: "oklch(0.78 0.14 72)" }}
+                    />
+                    <span className="text-sm font-medium text-foreground">
+                      {completedCount} / {total} done today
+                    </span>
+                  </div>
+                  <div className="w-40 md:w-48">
+                    <Progress
+                      value={progressPct}
+                      className="h-2 bg-muted"
+                      style={
+                        {
+                          "--progress-foreground": "oklch(0.78 0.14 72)",
+                        } as React.CSSProperties
+                      }
+                    />
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {progressPct}% complete
+                  </span>
+                </>
               )}
             </div>
           </div>
@@ -418,7 +817,7 @@ export default function DashboardPage({
               </div>
             ))}
           </div>
-        ) : total === 0 ? (
+        ) : !hasAnyContent ? (
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
@@ -459,6 +858,14 @@ export default function DashboardPage({
               animate={{ opacity: 1 }}
               className="space-y-8"
             >
+              {/* Frequency Goals section */}
+              <FrequencyGoalsSection
+                dailyRoutines={allRoutineData}
+                loggingIds={loggingIds}
+                onLog={(id) => handleLog(id, "completed")}
+              />
+
+              {/* Fixed-day routine groups */}
               {(
                 [
                   "overdue",
@@ -474,6 +881,8 @@ export default function DashboardPage({
                   items={groups[key]}
                   onDone={(id) => handleLog(id, "completed")}
                   onSkip={(id) => handleLog(id, "skipped")}
+                  onUndo={handleUndo}
+                  onMarkDone={handleMarkDone}
                   loggingIds={loggingIds}
                 />
               ))}

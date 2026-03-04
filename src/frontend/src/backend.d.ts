@@ -12,11 +12,17 @@ export interface DailyRoutineStatus {
     routine: Routine;
 }
 export type Timestamp = bigint;
+export interface ReminderOffset {
+    value: bigint;
+    unit: string;
+}
 export interface RoutineUpdate {
     repeatDays?: Array<DayOfWeek>;
     scheduledTime?: string;
     name?: string;
+    reminderEnabled?: boolean;
     description?: string;
+    reminderOffset?: ReminderOffset;
 }
 export interface RoutineLog {
     id: LogId;
@@ -33,7 +39,9 @@ export interface Routine {
     scheduledTime: string;
     name: string;
     createdAt: Timestamp;
+    reminderEnabled: boolean;
     description: string;
+    reminderOffset: ReminderOffset;
 }
 export interface UserProfile {
     name: string;
@@ -46,7 +54,7 @@ export enum UserRole {
 }
 export interface backendInterface {
     assignCallerUserRole(user: Principal, role: UserRole): Promise<void>;
-    createRoutine(name: string, description: string, scheduledTime: string, repeatDays: Array<DayOfWeek>): Promise<RoutineId>;
+    createRoutine(name: string, description: string, scheduledTime: string, repeatDays: Array<DayOfWeek>, reminderEnabled: boolean, reminderOffset: ReminderOffset): Promise<RoutineId>;
     deleteRoutine(id: RoutineId): Promise<void>;
     getAllRoutines(): Promise<Array<Routine>>;
     getCallerUserProfile(): Promise<UserProfile | null>;
@@ -59,4 +67,5 @@ export interface backendInterface {
     logRoutine(routineId: RoutineId, date: string, status: string): Promise<LogId>;
     saveCallerUserProfile(profile: UserProfile): Promise<void>;
     updateRoutine(id: RoutineId, updates: RoutineUpdate): Promise<void>;
+    updateRoutineLogStatus(routineId: RoutineId, date: string, newStatus: string): Promise<void>;
 }

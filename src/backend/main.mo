@@ -1,8 +1,6 @@
 import Map "mo:core/Map";
-import Set "mo:core/Set";
 import Array "mo:core/Array";
 import Time "mo:core/Time";
-import Text "mo:core/Text";
 import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
@@ -13,18 +11,24 @@ import AccessControl "authorization/access-control";
 
 actor {
   type Timestamp = Time.Time;
-  type DayOfWeek = Nat; // 0 = Sunday, 6 = Saturday
+  type DayOfWeek = Nat;
   type RoutineId = Nat;
   type LogId = Nat;
 
-  // Data Model
+  type ReminderOffset = {
+    value : Nat;
+    unit : Text;
+  };
+
   type Routine = {
     id : RoutineId;
     name : Text;
     description : Text;
-    scheduledTime : Text; // HH:MM format
+    scheduledTime : Text;
     repeatDays : [DayOfWeek];
     createdAt : Timestamp;
+    reminderEnabled : Bool;
+    reminderOffset : ReminderOffset;
   };
 
   type RoutineUpdate = {
@@ -32,19 +36,21 @@ actor {
     description : ?Text;
     scheduledTime : ?Text;
     repeatDays : ?[DayOfWeek];
+    reminderEnabled : ?Bool;
+    reminderOffset : ?ReminderOffset;
   };
 
   type RoutineLog = {
     id : LogId;
     routineId : RoutineId;
-    date : Text; // YYYY-MM-DD
-    status : Text; // "completed" | "skipped"
+    date : Text;
+    status : Text;
     loggedAt : Timestamp;
   };
 
   type DailyRoutineStatus = {
     routine : Routine;
-    status : ?Text; // "completed", "skipped", or null if not logged
+    status : ?Text;
   };
 
   public type UserProfile = {
@@ -105,7 +111,14 @@ actor {
   };
 
   // Routine Functions
-  public shared ({ caller }) func createRoutine(name : Text, description : Text, scheduledTime : Text, repeatDays : [DayOfWeek]) : async RoutineId {
+  public shared ({ caller }) func createRoutine(
+    name : Text,
+    description : Text,
+    scheduledTime : Text,
+    repeatDays : [DayOfWeek],
+    reminderEnabled : Bool,
+    reminderOffset : ReminderOffset,
+  ) : async RoutineId {
     if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
       Runtime.trap("Unauthorized: Only users can create routines");
     };
@@ -117,6 +130,8 @@ actor {
       scheduledTime;
       repeatDays;
       createdAt = Time.now();
+      reminderEnabled;
+      reminderOffset;
     };
 
     let userRoutines = getUserRoutines(caller);
@@ -163,6 +178,8 @@ actor {
           description = switch (updates.description) { case (null) { routine.description }; case (?d) { d } };
           scheduledTime = switch (updates.scheduledTime) { case (null) { routine.scheduledTime }; case (?t) { t } };
           repeatDays = switch (updates.repeatDays) { case (null) { routine.repeatDays }; case (?r) { r } };
+          reminderEnabled = switch (updates.reminderEnabled) { case (null) { routine.reminderEnabled }; case (?r) { r } };
+          reminderOffset = switch (updates.reminderOffset) { case (null) { routine.reminderOffset }; case (?r) { r } };
         };
         userRoutines.add(id, updatedRoutine);
       };
@@ -206,6 +223,70 @@ actor {
     };
   };
 
+  public shared ({ caller }) func updateRoutineLogStatus(routineId : RoutineId, date : Text, newStatus : Text) : async () {
+    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
+      Runtime.trap("Unauthorized: Only users can update routine logs");
+    };
+
+    let userRoutines = getUserRoutines(caller);
+    switch (userRoutines.get(routineId)) {
+      case (null) { Runtime.trap("Routine not found") };
+      case (?_) {
+        let userLogs = getUserRoutineLogs(caller);
+
+        let logsArray = userLogs.values().toArray();
+
+        // Find the most recent log for the given routineId and date.
+        let matchingLog = logsArray.foldLeft<RoutineLog, ?RoutineLog>(
+          null,
+          func(current, log) {
+            if (log.routineId == routineId and log.date == date) {
+              switch (current) {
+                case (null) { ?log };
+                case (?existingLog) {
+                  if (log.loggedAt > existingLog.loggedAt) {
+                    ?log;
+                  } else {
+                    current;
+                  };
+                };
+              };
+            } else {
+              current;
+            };
+          },
+        );
+
+        switch (matchingLog) {
+          case (null) {
+            // No matching log found, create a new one.
+            let newLog : RoutineLog = {
+              id = nextLogId;
+              routineId;
+              date;
+              status = newStatus;
+              loggedAt = Time.now();
+            };
+            userLogs.add(newLog.id, newLog);
+            routineLogs.add(caller, userLogs);
+            nextLogId += 1;
+          };
+          case (?existingLog) {
+            // Update the existing log
+            let updatedLog : RoutineLog = {
+              existingLog with
+              status = newStatus;
+              loggedAt = Time.now();
+            };
+
+            userLogs.add(existingLog.id, updatedLog);
+            routineLogs.add(caller, userLogs);
+          };
+        };
+      };
+    };
+  };
+
   public query ({ caller }) func getRoutineLogs(routineId : RoutineId) : async [RoutineLog] {
     if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
       Runtime.trap("Unauthorized: Only users can view routine logs");
@@ -231,12 +312,34 @@ actor {
     routinesArray.map<Routine, DailyRoutineStatus>(
       func(routine) {
         let logsArray = userLogs.values().toArray();
-        let log = logsArray.find(
-          func(l) { l.routineId == routine.id and l.date == date },
+
+        // Find the most recent log for this routine and the given date
+        let mostRecentLog = logsArray.foldLeft<RoutineLog, ?RoutineLog>(
+          null,
+          func(current, log) {
+            if (log.routineId == routine.id and log.date == date) {
+              switch (current) {
+                case (null) { ?log };
+                case (?existingLog) {
+                  if (log.loggedAt > existingLog.loggedAt) {
+                    ?log;
+                  } else {
+                    current;
+                  };
+                };
+              };
+            } else {
+              current;
+            };
+          },
         );
+
         {
           routine;
-          status = switch (log) { case (null) { null }; case (?l) { ?l.status } };
+          status = switch (mostRecentLog) {
+            case (null) { null };
+            case (?l) { ?l.status };
+          };
         };
       },
     );

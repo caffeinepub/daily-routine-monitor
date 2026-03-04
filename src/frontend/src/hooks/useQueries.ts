@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   DailyRoutineStatus,
+  ReminderOffset,
   Routine,
   RoutineId,
   RoutineLog,
@@ -85,6 +86,8 @@ export function useCreateRoutine() {
       description: string;
       scheduledTime: string;
       repeatDays: bigint[];
+      reminderEnabled: boolean;
+      reminderOffset: ReminderOffset;
     }) => {
       if (!actor) throw new Error("Actor not available");
       return actor.createRoutine(
@@ -92,6 +95,8 @@ export function useCreateRoutine() {
         params.description,
         params.scheduledTime,
         params.repeatDays,
+        params.reminderEnabled,
+        params.reminderOffset,
       );
     },
     onSuccess: () => {
@@ -145,6 +150,32 @@ export function useLogRoutine() {
     }) => {
       if (!actor) throw new Error("Actor not available");
       return actor.logRoutine(params.routineId, params.date, params.status);
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["dailyRoutines"] });
+      queryClient.invalidateQueries({
+        queryKey: ["routineLogs", variables.routineId.toString()],
+      });
+    },
+  });
+}
+
+export function useUpdateRoutineLogStatus() {
+  const { actor } = useActor();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (params: {
+      routineId: RoutineId;
+      date: string;
+      newStatus: string;
+    }) => {
+      if (!actor) throw new Error("Actor not available");
+      return actor.updateRoutineLogStatus(
+        params.routineId,
+        params.date,
+        params.newStatus,
+      );
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["dailyRoutines"] });

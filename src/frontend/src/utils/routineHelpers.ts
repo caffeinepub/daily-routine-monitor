@@ -1,4 +1,4 @@
-import type { DailyRoutineStatus } from "../backend.d";
+import type { DailyRoutineStatus, Routine } from "../backend.d";
 
 export type RoutineGroup =
   | "overdue"
@@ -144,6 +144,93 @@ export function calculateStreak(
   }
 
   return streak;
+}
+
+// ─── Frequency Metadata Helpers ───────────────────────────────────────────────
+
+const FREQ_PREFIX_RE = /^__freq:(\{.*?\})__/;
+
+/** Parse the __freq:{...}__ prefix from description */
+export function parseFrequencyMeta(
+  description: string,
+): { count: number; period: "week" | "month" } | null {
+  const match = FREQ_PREFIX_RE.exec(description);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]!) as {
+      count: number;
+      period: "week" | "month";
+    };
+    if (
+      typeof parsed.count === "number" &&
+      (parsed.period === "week" || parsed.period === "month")
+    ) {
+      return parsed;
+    }
+  } catch {
+    // invalid JSON
+  }
+  return null;
+}
+
+/** Strip the __freq:{...}__ prefix from a description string */
+export function stripFrequencyMeta(description: string): string {
+  return description.replace(FREQ_PREFIX_RE, "");
+}
+
+/** Encode frequency metadata into the description */
+export function encodeFrequencyMeta(
+  count: number,
+  period: "week" | "month",
+  userDesc: string,
+): string {
+  return `__freq:${JSON.stringify({ count, period })}__${userDesc}`;
+}
+
+/** Returns true if this routine uses flexible frequency scheduling */
+export function isFrequencyRoutine(routine: Routine): boolean {
+  if (parseFrequencyMeta(routine.description) === null) return false;
+  // Also confirm all 7 days are set
+  const nums = routine.repeatDays.map(Number).sort();
+  return nums.join(",") === "0,1,2,3,4,5,6";
+}
+
+/** Format frequency as a readable label */
+export function formatFrequencyLabel(
+  count: number,
+  period: "week" | "month",
+): string {
+  if (period === "week" && count === 7) return "Daily";
+  if (period === "week" && count === 1) return "1× per week";
+  if (period === "month" && count === 1) return "1× per month";
+  return `${count}× per ${period}`;
+}
+
+/** Get start of current week (Monday) as YYYY-MM-DD */
+export function getWeekStart(): string {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun
+  const diff = day === 0 ? -6 : 1 - day; // shift to Monday
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + diff);
+  monday.setHours(0, 0, 0, 0);
+  return monday.toISOString().split("T")[0]!;
+}
+
+/** Get start of current month as YYYY-MM-DD */
+export function getMonthStart(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
+/** Count completed logs in the current week or month */
+export function countCompletionsInPeriod(
+  logs: { date: string; status: string }[],
+  period: "week" | "month",
+): number {
+  const periodStart = period === "week" ? getWeekStart() : getMonthStart();
+  return logs.filter((l) => l.status === "completed" && l.date >= periodStart)
+    .length;
 }
 
 /** Group daily routines into categories */

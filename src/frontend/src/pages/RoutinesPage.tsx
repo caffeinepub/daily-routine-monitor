@@ -8,6 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -20,9 +21,19 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Bell,
+  BellOff,
   CalendarDays,
   Check,
   Clock,
@@ -30,12 +41,13 @@ import {
   ListChecks,
   Loader2,
   Plus,
+  RefreshCw,
   Trash2,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import type { Routine, RoutineUpdate } from "../backend.d";
+import type { ReminderOffset, Routine, RoutineUpdate } from "../backend.d";
 import {
   useCreateRoutine,
   useDeleteRoutine,
@@ -44,24 +56,46 @@ import {
 } from "../hooks/useQueries";
 import {
   DAY_LABELS,
+  encodeFrequencyMeta,
+  formatFrequencyLabel,
   formatRepeatDays,
   formatTime12h,
+  isFrequencyRoutine,
+  parseFrequencyMeta,
+  stripFrequencyMeta,
 } from "../utils/routineHelpers";
 
 // ─── Form State ───────────────────────────────────────────────────────────────
+
+type ScheduleMode = "specific" | "flexible";
 
 interface RoutineFormData {
   name: string;
   description: string;
   scheduledTime: string;
+  scheduleMode: ScheduleMode;
+  // specific days mode
   repeatDays: number[];
+  // flexible frequency mode
+  freqCount: number;
+  freqPeriod: "week" | "month";
+  // reminder
+  reminderEnabled: boolean;
+  reminderValue: number;
+  reminderUnit: "minutes" | "hours" | "days";
 }
 
 const defaultForm: RoutineFormData = {
   name: "",
   description: "",
   scheduledTime: "08:00",
-  repeatDays: [1, 2, 3, 4, 5], // Weekdays default
+  scheduleMode: "specific",
+  repeatDays: [1, 2, 3, 4, 5],
+  freqCount: 3,
+  freqPeriod: "week",
+  reminderEnabled: false,
+  reminderValue: 30,
+  reminderUnit: "minutes",
 };
 
 const PRESETS = [
@@ -71,6 +105,57 @@ const PRESETS = [
   { label: "Mon/Wed/Fri", days: [1, 3, 5] },
   { label: "Tue/Thu", days: [2, 4] },
 ];
+
+function formDataFromRoutine(routine: Routine): RoutineFormData {
+  const freqMeta = parseFrequencyMeta(routine.description);
+  const isFreq = freqMeta !== null;
+  const reminderUnit =
+    routine.reminderOffset.unit === "minutes" ||
+    routine.reminderOffset.unit === "hours" ||
+    routine.reminderOffset.unit === "days"
+      ? (routine.reminderOffset.unit as "minutes" | "hours" | "days")
+      : "minutes";
+
+  return {
+    name: routine.name,
+    description: stripFrequencyMeta(routine.description),
+    scheduledTime: routine.scheduledTime,
+    scheduleMode: isFreq ? "flexible" : "specific",
+    repeatDays: isFreq ? [0, 1, 2, 3, 4, 5, 6] : routine.repeatDays.map(Number),
+    freqCount: freqMeta?.count ?? 3,
+    freqPeriod: freqMeta?.period ?? "week",
+    reminderEnabled: routine.reminderEnabled,
+    reminderValue: Number(routine.reminderOffset.value),
+    reminderUnit,
+  };
+}
+
+function buildRepeatDaysAndDescription(form: RoutineFormData): {
+  repeatDays: bigint[];
+  description: string;
+} {
+  if (form.scheduleMode === "flexible") {
+    return {
+      repeatDays: [0n, 1n, 2n, 3n, 4n, 5n, 6n],
+      description: encodeFrequencyMeta(
+        form.freqCount,
+        form.freqPeriod,
+        form.description.trim(),
+      ),
+    };
+  }
+  return {
+    repeatDays: [...form.repeatDays].sort().map(BigInt),
+    description: form.description.trim(),
+  };
+}
+
+function buildReminderOffset(form: RoutineFormData): ReminderOffset {
+  if (!form.reminderEnabled) {
+    return { value: 30n, unit: "minutes" };
+  }
+  return { value: BigInt(form.reminderValue), unit: form.reminderUnit };
+}
 
 // ─── Form Dialog ──────────────────────────────────────────────────────────────
 
@@ -89,21 +174,20 @@ function RoutineFormDialog({
   onSubmit,
   isPending,
 }: RoutineFormDialogProps) {
-  const [form, setForm] = useState<RoutineFormData>(() => {
-    if (editRoutine) {
-      return {
-        name: editRoutine.name,
-        description: editRoutine.description,
-        scheduledTime: editRoutine.scheduledTime,
-        repeatDays: editRoutine.repeatDays.map(Number),
-      };
-    }
-    return defaultForm;
-  });
+  const [form, setForm] = useState<RoutineFormData>(() =>
+    editRoutine ? formDataFromRoutine(editRoutine) : defaultForm,
+  );
 
-  const [errors, setErrors] = useState<{ name?: string }>({});
+  const [errors, setErrors] = useState<{ name?: string; freqCount?: string }>(
+    {},
+  );
 
-  // Reset form when dialog opens
+  // Reset when editRoutine changes (e.g., opening a different edit)
+  useEffect(() => {
+    setForm(editRoutine ? formDataFromRoutine(editRoutine) : defaultForm);
+    setErrors({});
+  }, [editRoutine]);
+
   const handleOpenChange = (isOpen: boolean) => {
     if (!isOpen) {
       onClose();
@@ -126,8 +210,17 @@ function RoutineFormDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const newErrors: { name?: string } = {};
+    const newErrors: { name?: string; freqCount?: string } = {};
     if (!form.name.trim()) newErrors.name = "Name is required";
+    if (form.scheduleMode === "flexible") {
+      if (
+        !Number.isInteger(form.freqCount) ||
+        form.freqCount < 1 ||
+        form.freqCount > 31
+      ) {
+        newErrors.freqCount = "Enter a number between 1 and 31";
+      }
+    }
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -140,10 +233,17 @@ function RoutineFormDialog({
     return sorted === [...days].sort().join(",");
   };
 
+  const maxReminderValue =
+    form.reminderUnit === "minutes"
+      ? 1440
+      : form.reminderUnit === "hours"
+        ? 72
+        : 30;
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="max-w-md bg-card border-border text-foreground"
+        className="max-w-md bg-card border-border text-foreground max-h-[90vh] overflow-y-auto"
         data-ocid="routine.dialog"
       >
         <DialogHeader>
@@ -153,7 +253,7 @@ function RoutineFormDialog({
           <DialogDescription className="text-muted-foreground text-sm">
             {editRoutine
               ? "Update your routine details."
-              : "Set up a new habit to track daily."}
+              : "Set up a new habit to track."}
           </DialogDescription>
         </DialogHeader>
 
@@ -172,7 +272,8 @@ function RoutineFormDialog({
               value={form.name}
               onChange={(e) => {
                 setForm((p) => ({ ...p, name: e.target.value }));
-                if (errors.name) setErrors({});
+                if (errors.name)
+                  setErrors((prev) => ({ ...prev, name: undefined }));
               }}
               className="bg-background border-input"
               data-ocid="routine.input"
@@ -231,54 +332,270 @@ function RoutineFormDialog({
             </div>
           </div>
 
-          {/* Repeat days */}
-          <div className="space-y-2.5">
-            <Label className="text-sm text-foreground/80">Repeat on</Label>
+          {/* Schedule Type Toggle */}
+          <div className="space-y-3">
+            <Label className="text-sm text-foreground/80">Schedule type</Label>
+            <div className="flex gap-2 p-1 rounded-lg bg-background border border-border">
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((p) => ({ ...p, scheduleMode: "specific" }))
+                }
+                className={`flex-1 py-1.5 px-3 rounded-md text-xs font-semibold transition-all ${
+                  form.scheduleMode === "specific"
+                    ? "text-black shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                style={
+                  form.scheduleMode === "specific"
+                    ? { background: "oklch(0.78 0.14 72)" }
+                    : {}
+                }
+                data-ocid="routine.schedule_mode.toggle"
+              >
+                <CalendarDays className="inline w-3.5 h-3.5 mr-1 -mt-0.5" />
+                Specific Days
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((p) => ({ ...p, scheduleMode: "flexible" }))
+                }
+                className={`flex-1 py-1.5 px-3 rounded-md text-xs font-semibold transition-all ${
+                  form.scheduleMode === "flexible"
+                    ? "text-black shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                style={
+                  form.scheduleMode === "flexible"
+                    ? { background: "oklch(0.78 0.14 72)" }
+                    : {}
+                }
+              >
+                <RefreshCw className="inline w-3.5 h-3.5 mr-1 -mt-0.5" />
+                Flexible Frequency
+              </button>
+            </div>
 
-            {/* Presets */}
-            <div className="flex flex-wrap gap-1.5">
-              {PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => applyPreset(preset.days)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all border ${
-                    isPresetActive(preset.days)
-                      ? "border-transparent text-black"
-                      : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/20"
-                  }`}
+            {/* Specific Days Mode */}
+            {form.scheduleMode === "specific" && (
+              <div className="space-y-2.5">
+                {/* Presets */}
+                <div className="flex flex-wrap gap-1.5">
+                  {PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => applyPreset(preset.days)}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all border ${
+                        isPresetActive(preset.days)
+                          ? "border-transparent text-black"
+                          : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/20"
+                      }`}
+                      style={
+                        isPresetActive(preset.days)
+                          ? { background: "oklch(0.78 0.14 72)" }
+                          : {}
+                      }
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Day checkboxes */}
+                <div className="flex gap-2">
+                  {DAY_LABELS.map((label, i) => {
+                    const checked = form.repeatDays.includes(i);
+                    return (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => toggleDay(i)}
+                        className={`flex-1 h-9 rounded-lg text-xs font-semibold transition-all border ${
+                          checked
+                            ? "border-transparent text-black"
+                            : "border-border text-muted-foreground hover:text-foreground"
+                        }`}
+                        style={
+                          checked ? { background: "oklch(0.78 0.14 72)" } : {}
+                        }
+                      >
+                        {label[0]}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Flexible Frequency Mode */}
+            {form.scheduleMode === "flexible" && (
+              <div className="rounded-lg border border-border p-3 space-y-3 bg-background/50">
+                <p className="text-xs text-muted-foreground">
+                  Set how often you want to do this task. The exact days are up
+                  to you — just log it when you do it.
+                </p>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={form.freqCount}
+                      onChange={(e) => {
+                        const val = Number.parseInt(e.target.value, 10);
+                        setForm((p) => ({
+                          ...p,
+                          freqCount: Number.isNaN(val) ? 1 : val,
+                        }));
+                        if (errors.freqCount)
+                          setErrors((prev) => ({
+                            ...prev,
+                            freqCount: undefined,
+                          }));
+                      }}
+                      className="w-16 bg-background border-input text-center"
+                      data-ocid="routine.freq_count.input"
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      times per
+                    </span>
+                    <Select
+                      value={form.freqPeriod}
+                      onValueChange={(v) =>
+                        setForm((p) => ({
+                          ...p,
+                          freqPeriod: v as "week" | "month",
+                        }))
+                      }
+                    >
+                      <SelectTrigger
+                        className="w-24 bg-background border-input"
+                        data-ocid="routine.freq_period.select"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="week">Week</SelectItem>
+                        <SelectItem value="month">Month</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {errors.freqCount && (
+                  <p className="text-xs text-destructive">{errors.freqCount}</p>
+                )}
+                <div
+                  className="text-xs px-2.5 py-1.5 rounded-md inline-flex items-center gap-1.5"
+                  style={{
+                    background: "oklch(0.78 0.14 72 / 0.1)",
+                    color: "oklch(0.78 0.14 72)",
+                  }}
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  {formatFrequencyLabel(form.freqCount, form.freqPeriod)}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Reminder Section */}
+          <div
+            className="rounded-lg border border-border p-3 space-y-3"
+            style={{
+              background: form.reminderEnabled
+                ? "oklch(0.78 0.14 72 / 0.04)"
+                : undefined,
+              borderColor: form.reminderEnabled
+                ? "oklch(0.78 0.14 72 / 0.3)"
+                : undefined,
+            }}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {form.reminderEnabled ? (
+                  <Bell
+                    className="w-4 h-4"
+                    style={{ color: "oklch(0.78 0.14 72)" }}
+                  />
+                ) : (
+                  <BellOff className="w-4 h-4 text-muted-foreground" />
+                )}
+                <Label
+                  htmlFor="reminder-switch"
+                  className="text-sm font-medium cursor-pointer"
                   style={
-                    isPresetActive(preset.days)
-                      ? { background: "oklch(0.78 0.14 72)" }
-                      : {}
+                    form.reminderEnabled ? { color: "oklch(0.78 0.14 72)" } : {}
                   }
                 >
-                  {preset.label}
-                </button>
-              ))}
+                  Remind me
+                </Label>
+              </div>
+              <Switch
+                id="reminder-switch"
+                checked={form.reminderEnabled}
+                onCheckedChange={(checked) =>
+                  setForm((p) => ({ ...p, reminderEnabled: checked }))
+                }
+                data-ocid="routine.reminder.switch"
+              />
             </div>
 
-            {/* Day checkboxes */}
-            <div className="flex gap-2">
-              {DAY_LABELS.map((label, i) => {
-                const checked = form.repeatDays.includes(i);
-                return (
-                  <button
-                    key={label}
-                    type="button"
-                    onClick={() => toggleDay(i)}
-                    className={`flex-1 h-9 rounded-lg text-xs font-semibold transition-all border ${
-                      checked
-                        ? "border-transparent text-black"
-                        : "border-border text-muted-foreground hover:text-foreground"
-                    }`}
-                    style={checked ? { background: "oklch(0.78 0.14 72)" } : {}}
+            {form.reminderEnabled && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="space-y-2"
+              >
+                <p className="text-xs text-muted-foreground">
+                  Remind me this long before the scheduled time:
+                </p>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={maxReminderValue}
+                    value={form.reminderValue}
+                    onChange={(e) => {
+                      const val = Number.parseInt(e.target.value, 10);
+                      setForm((p) => ({
+                        ...p,
+                        reminderValue: Number.isNaN(val) ? 1 : Math.max(1, val),
+                      }));
+                    }}
+                    className="w-20 bg-background border-input text-center"
+                    data-ocid="routine.reminder.value.input"
+                  />
+                  <Select
+                    value={form.reminderUnit}
+                    onValueChange={(v) =>
+                      setForm((p) => ({
+                        ...p,
+                        reminderUnit: v as "minutes" | "hours" | "days",
+                        reminderValue: Math.min(
+                          p.reminderValue,
+                          v === "minutes" ? 1440 : v === "hours" ? 72 : 30,
+                        ),
+                      }))
+                    }
                   >
-                    {label[0]}
-                  </button>
-                );
-              })}
-            </div>
+                    <SelectTrigger
+                      className="w-36 bg-background border-input"
+                      data-ocid="routine.reminder.unit.select"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="minutes">minutes before</SelectItem>
+                      <SelectItem value="hours">hours before</SelectItem>
+                      <SelectItem value="days">days before</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </motion.div>
+            )}
           </div>
 
           <DialogFooter className="gap-2 mt-2">
@@ -329,26 +646,48 @@ interface RoutineRowProps {
   onDelete: (routine: Routine) => void;
 }
 
+function formatReminderChip(routine: Routine): string {
+  const { value, unit } = routine.reminderOffset;
+  const n = Number(value);
+  if (unit === "minutes") return `${n} min before`;
+  if (unit === "hours") return `${n}h before`;
+  if (unit === "days") return `${n} day${n !== 1 ? "s" : ""} before`;
+  return "";
+}
+
 function RoutineRow({ routine, index, onEdit, onDelete }: RoutineRowProps) {
+  const isFreq = isFrequencyRoutine(routine);
+  const freqMeta = isFreq ? parseFrequencyMeta(routine.description) : null;
+  const displayDescription = isFreq
+    ? stripFrequencyMeta(routine.description)
+    : routine.description;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.04, duration: 0.25 }}
-      className="bg-card border border-border rounded-xl px-4 py-3.5 flex items-center gap-3 hover:border-foreground/10 transition-colors"
+      className="bg-card border border-border rounded-xl px-4 py-3.5 flex items-start gap-3 hover:border-foreground/10 transition-colors"
       data-ocid={`routine.item.${index + 1}`}
     >
       {/* Time indicator */}
       <div
-        className="w-10 h-10 rounded-lg flex flex-col items-center justify-center shrink-0 text-center"
+        className="w-10 h-10 rounded-lg flex flex-col items-center justify-center shrink-0 text-center mt-0.5"
         style={{ background: "oklch(0.78 0.14 72 / 0.1)" }}
       >
-        <Clock
-          className="w-3.5 h-3.5 mb-0.5"
-          style={{ color: "oklch(0.78 0.14 72)" }}
-        />
+        {isFreq ? (
+          <RefreshCw
+            className="w-3.5 h-3.5"
+            style={{ color: "oklch(0.78 0.14 72)" }}
+          />
+        ) : (
+          <Clock
+            className="w-3.5 h-3.5 mb-0.5"
+            style={{ color: "oklch(0.78 0.14 72)" }}
+          />
+        )}
         <span
-          className="text-[9px] font-mono font-bold leading-none"
+          className="text-[9px] font-mono font-bold leading-none mt-0.5"
           style={{ color: "oklch(0.78 0.14 72)" }}
         >
           {formatTime12h(routine.scheduledTime).replace(" ", "\n")}
@@ -357,26 +696,62 @@ function RoutineRow({ routine, index, onEdit, onDelete }: RoutineRowProps) {
 
       {/* Info */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <h3 className="font-semibold text-sm text-foreground truncate">
             {routine.name}
           </h3>
+          {routine.reminderEnabled && (
+            <div
+              className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+              style={{
+                background: "oklch(0.78 0.14 72 / 0.12)",
+                color: "oklch(0.78 0.14 72)",
+              }}
+              title={`Reminder: ${formatReminderChip(routine)}`}
+            >
+              <Bell className="w-2.5 h-2.5" />
+              {formatReminderChip(routine)}
+            </div>
+          )}
         </div>
-        {routine.description && (
+
+        {displayDescription && (
           <p className="text-xs text-muted-foreground truncate mt-0.5">
-            {routine.description}
+            {displayDescription}
           </p>
         )}
-        <div className="flex items-center gap-1.5 mt-1">
-          <CalendarDays className="w-3 h-3 text-muted-foreground shrink-0" />
-          <span className="text-[11px] text-muted-foreground">
-            {formatRepeatDays(routine.repeatDays)}
-          </span>
+
+        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+          {isFreq && freqMeta ? (
+            <>
+              <RefreshCw className="w-3 h-3 text-muted-foreground shrink-0" />
+              <span className="text-[11px] text-muted-foreground">
+                {formatFrequencyLabel(freqMeta.count, freqMeta.period)}
+              </span>
+              <Badge
+                variant="secondary"
+                className="text-[9px] px-1.5 py-0 h-4 ml-0.5"
+                style={{
+                  background: "oklch(0.78 0.14 72 / 0.1)",
+                  color: "oklch(0.78 0.14 72)",
+                }}
+              >
+                flexible
+              </Badge>
+            </>
+          ) : (
+            <>
+              <CalendarDays className="w-3 h-3 text-muted-foreground shrink-0" />
+              <span className="text-[11px] text-muted-foreground">
+                {formatRepeatDays(routine.repeatDays)}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-1 shrink-0 mt-0.5">
         <Button
           size="icon"
           variant="ghost"
@@ -413,12 +788,16 @@ export default function RoutinesPage() {
   const [deleteTarget, setDeleteTarget] = useState<Routine | null>(null);
 
   const handleCreate = async (data: RoutineFormData) => {
+    const { repeatDays, description } = buildRepeatDaysAndDescription(data);
+    const reminderOffset = buildReminderOffset(data);
     try {
       await createRoutine.mutateAsync({
         name: data.name.trim(),
-        description: data.description.trim(),
+        description,
         scheduledTime: data.scheduledTime,
-        repeatDays: data.repeatDays.sort().map(BigInt),
+        repeatDays,
+        reminderEnabled: data.reminderEnabled,
+        reminderOffset,
       });
       toast.success(`"${data.name}" routine created!`);
       setShowForm(false);
@@ -429,11 +808,15 @@ export default function RoutinesPage() {
 
   const handleUpdate = async (data: RoutineFormData) => {
     if (!editRoutine) return;
+    const { repeatDays, description } = buildRepeatDaysAndDescription(data);
+    const reminderOffset = buildReminderOffset(data);
     const updates: RoutineUpdate = {
       name: data.name.trim(),
-      description: data.description.trim(),
+      description,
       scheduledTime: data.scheduledTime,
-      repeatDays: data.repeatDays.sort().map(BigInt),
+      repeatDays,
+      reminderEnabled: data.reminderEnabled,
+      reminderOffset,
     };
     try {
       await updateRoutine.mutateAsync({ id: editRoutine.id, updates });

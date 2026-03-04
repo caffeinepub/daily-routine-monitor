@@ -14,6 +14,10 @@ export const UserRole = IDL.Variant({
   'guest' : IDL.Null,
 });
 export const DayOfWeek = IDL.Nat;
+export const ReminderOffset = IDL.Record({
+  'value' : IDL.Nat,
+  'unit' : IDL.Text,
+});
 export const RoutineId = IDL.Nat;
 export const Timestamp = IDL.Int;
 export const Routine = IDL.Record({
@@ -22,7 +26,9 @@ export const Routine = IDL.Record({
   'scheduledTime' : IDL.Text,
   'name' : IDL.Text,
   'createdAt' : Timestamp,
+  'reminderEnabled' : IDL.Bool,
   'description' : IDL.Text,
+  'reminderOffset' : ReminderOffset,
 });
 export const UserProfile = IDL.Record({ 'name' : IDL.Text });
 export const DailyRoutineStatus = IDL.Record({
@@ -41,14 +47,23 @@ export const RoutineUpdate = IDL.Record({
   'repeatDays' : IDL.Opt(IDL.Vec(DayOfWeek)),
   'scheduledTime' : IDL.Opt(IDL.Text),
   'name' : IDL.Opt(IDL.Text),
+  'reminderEnabled' : IDL.Opt(IDL.Bool),
   'description' : IDL.Opt(IDL.Text),
+  'reminderOffset' : IDL.Opt(ReminderOffset),
 });
 
 export const idlService = IDL.Service({
   '_initializeAccessControlWithSecret' : IDL.Func([IDL.Text], [], []),
   'assignCallerUserRole' : IDL.Func([IDL.Principal, UserRole], [], []),
   'createRoutine' : IDL.Func(
-      [IDL.Text, IDL.Text, IDL.Text, IDL.Vec(DayOfWeek)],
+      [
+        IDL.Text,
+        IDL.Text,
+        IDL.Text,
+        IDL.Vec(DayOfWeek),
+        IDL.Bool,
+        ReminderOffset,
+      ],
       [RoutineId],
       [],
     ),
@@ -72,6 +87,7 @@ export const idlService = IDL.Service({
   'logRoutine' : IDL.Func([RoutineId, IDL.Text, IDL.Text], [LogId], []),
   'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
   'updateRoutine' : IDL.Func([RoutineId, RoutineUpdate], [], []),
+  'updateRoutineLogStatus' : IDL.Func([RoutineId, IDL.Text, IDL.Text], [], []),
 });
 
 export const idlInitArgs = [];
@@ -83,6 +99,7 @@ export const idlFactory = ({ IDL }) => {
     'guest' : IDL.Null,
   });
   const DayOfWeek = IDL.Nat;
+  const ReminderOffset = IDL.Record({ 'value' : IDL.Nat, 'unit' : IDL.Text });
   const RoutineId = IDL.Nat;
   const Timestamp = IDL.Int;
   const Routine = IDL.Record({
@@ -91,7 +108,9 @@ export const idlFactory = ({ IDL }) => {
     'scheduledTime' : IDL.Text,
     'name' : IDL.Text,
     'createdAt' : Timestamp,
+    'reminderEnabled' : IDL.Bool,
     'description' : IDL.Text,
+    'reminderOffset' : ReminderOffset,
   });
   const UserProfile = IDL.Record({ 'name' : IDL.Text });
   const DailyRoutineStatus = IDL.Record({
@@ -110,14 +129,23 @@ export const idlFactory = ({ IDL }) => {
     'repeatDays' : IDL.Opt(IDL.Vec(DayOfWeek)),
     'scheduledTime' : IDL.Opt(IDL.Text),
     'name' : IDL.Opt(IDL.Text),
+    'reminderEnabled' : IDL.Opt(IDL.Bool),
     'description' : IDL.Opt(IDL.Text),
+    'reminderOffset' : IDL.Opt(ReminderOffset),
   });
   
   return IDL.Service({
     '_initializeAccessControlWithSecret' : IDL.Func([IDL.Text], [], []),
     'assignCallerUserRole' : IDL.Func([IDL.Principal, UserRole], [], []),
     'createRoutine' : IDL.Func(
-        [IDL.Text, IDL.Text, IDL.Text, IDL.Vec(DayOfWeek)],
+        [
+          IDL.Text,
+          IDL.Text,
+          IDL.Text,
+          IDL.Vec(DayOfWeek),
+          IDL.Bool,
+          ReminderOffset,
+        ],
         [RoutineId],
         [],
       ),
@@ -141,6 +169,11 @@ export const idlFactory = ({ IDL }) => {
     'logRoutine' : IDL.Func([RoutineId, IDL.Text, IDL.Text], [LogId], []),
     'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
     'updateRoutine' : IDL.Func([RoutineId, RoutineUpdate], [], []),
+    'updateRoutineLogStatus' : IDL.Func(
+        [RoutineId, IDL.Text, IDL.Text],
+        [],
+        [],
+      ),
   });
 };
 
