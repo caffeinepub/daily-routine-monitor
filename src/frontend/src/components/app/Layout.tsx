@@ -6,6 +6,7 @@ import {
   ListChecks,
   LogOut,
   Menu,
+  Settings,
   User,
   X,
   Zap,
@@ -14,7 +15,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 import { useInternetIdentity } from "../../hooks/useInternetIdentity";
 
-type Page = "dashboard" | "routines" | "history";
+type Page = "dashboard" | "routines" | "history" | "settings";
 
 interface LayoutProps {
   currentPage: Page;
@@ -42,7 +43,16 @@ const navItems = [
     icon: History,
     ocid: "nav.history.link",
   },
+  {
+    id: "settings" as Page,
+    label: "Settings",
+    icon: Settings,
+    ocid: "nav.settings.link",
+  },
 ];
+
+// Bottom nav shows only the first 3 items to avoid crowding on small screens
+const bottomNavItems = navItems.slice(0, 3);
 
 export default function Layout({
   currentPage,
@@ -256,7 +266,7 @@ export default function Layout({
 
       {/* Mobile Bottom Nav */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-sidebar border-t border-sidebar-border px-2 py-2 flex items-center justify-around">
-        {navItems.map((item) => {
+        {bottomNavItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentPage === item.id;
           return (

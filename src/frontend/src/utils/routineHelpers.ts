@@ -217,6 +217,56 @@ export function getWeekStart(): string {
   return monday.toISOString().split("T")[0]!;
 }
 
+export type WeekStartMode =
+  | "rolling7" // past 7 days
+  | "sun" // Sunday–Saturday (day 0)
+  | "mon" // Monday–Sunday (day 1) — default
+  | "tue" // Tuesday–Monday (day 2)
+  | "wed" // Wednesday–Tuesday (day 3)
+  | "thu" // Thursday–Wednesday (day 4)
+  | "fri" // Friday–Thursday (day 5)
+  | "sat"; // Saturday–Friday (day 6)
+
+export const WEEK_MODE_LABELS: Record<WeekStartMode, string> = {
+  rolling7: "Past 7 days (rolling)",
+  sun: "Sunday – Saturday",
+  mon: "Monday – Sunday",
+  tue: "Tuesday – Monday",
+  wed: "Wednesday – Tuesday",
+  thu: "Thursday – Wednesday",
+  fri: "Friday – Thursday",
+  sat: "Saturday – Friday",
+};
+
+/** Get the start of the current week as YYYY-MM-DD based on the chosen mode */
+export function getWeekStartWithMode(mode: WeekStartMode): string {
+  const now = new Date();
+  if (mode === "rolling7") {
+    const d = new Date(now);
+    d.setDate(now.getDate() - 6);
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString().split("T")[0]!;
+  }
+  const startDayMap: Record<WeekStartMode, number> = {
+    rolling7: 1,
+    sun: 0,
+    mon: 1,
+    tue: 2,
+    wed: 3,
+    thu: 4,
+    fri: 5,
+    sat: 6,
+  };
+  const startDay = startDayMap[mode];
+  const todayDay = now.getDay(); // 0=Sun
+  let diff = todayDay - startDay;
+  if (diff < 0) diff += 7;
+  const d = new Date(now);
+  d.setDate(now.getDate() - diff);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString().split("T")[0]!;
+}
+
 /** Get start of current month as YYYY-MM-DD */
 export function getMonthStart(): string {
   const now = new Date();
@@ -227,10 +277,42 @@ export function getMonthStart(): string {
 export function countCompletionsInPeriod(
   logs: { date: string; status: string }[],
   period: "week" | "month",
+  weekStartOverride?: string,
 ): number {
-  const periodStart = period === "week" ? getWeekStart() : getMonthStart();
+  const periodStart =
+    period === "week" ? (weekStartOverride ?? getWeekStart()) : getMonthStart();
   return logs.filter((l) => l.status === "completed" && l.date >= periodStart)
     .length;
+}
+
+/** Returns array of YYYY-MM-DD strings for the 7 days starting from weekStart */
+export function getWeekDates(weekStart: string): string[] {
+  const dates: string[] = [];
+  const [y, m, d] = weekStart.split("-").map(Number);
+  const start = new Date(y!, (m ?? 1) - 1, d!);
+  for (let i = 0; i < 7; i++) {
+    const dt = new Date(start);
+    dt.setDate(start.getDate() + i);
+    dates.push(dt.toISOString().split("T")[0]!);
+  }
+  return dates;
+}
+
+/** Returns 0–6 day-of-week for a YYYY-MM-DD date string (0=Sun) */
+export function getDayOfWeekForDate(dateStr: string): number {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y!, (m ?? 1) - 1, d!).getDay();
+}
+
+/** Count how many fixed-day routines are scheduled on a specific date */
+export function countPlannedForDate(
+  routines: Routine[],
+  dateStr: string,
+): number {
+  const dow = getDayOfWeekForDate(dateStr);
+  return routines.filter(
+    (r) => !isFrequencyRoutine(r) && r.repeatDays.map(Number).includes(dow),
+  ).length;
 }
 
 /** Group daily routines into categories */

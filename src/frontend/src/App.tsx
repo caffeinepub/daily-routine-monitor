@@ -8,8 +8,9 @@ import HistoryPage from "./pages/HistoryPage";
 import LoginPage from "./pages/LoginPage";
 import ProfileSetupPage from "./pages/ProfileSetupPage";
 import RoutinesPage from "./pages/RoutinesPage";
+import SettingsPage from "./pages/SettingsPage";
 
-type Page = "dashboard" | "routines" | "history";
+type Page = "dashboard" | "routines" | "history" | "settings";
 
 function AppContent() {
   const { identity } = useInternetIdentity();
@@ -91,6 +92,8 @@ function AppContent() {
         return <RoutinesPage />;
       case "history":
         return <HistoryPage />;
+      case "settings":
+        return <SettingsPage />;
       default:
         return (
           <DashboardPage

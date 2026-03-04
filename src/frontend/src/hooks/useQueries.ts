@@ -200,3 +200,22 @@ export function useGetRoutineLogs(routineId: RoutineId | null) {
     enabled: !!actor && !actorFetching && routineId !== null,
   });
 }
+
+export function useGetAllRoutineLogs(routineIds: RoutineId[]) {
+  const { actor, isFetching: actorFetching } = useActor();
+
+  return useQuery<RoutineLog[]>({
+    queryKey: [
+      "allRoutineLogs",
+      routineIds.map((id) => id.toString()).join(","),
+    ],
+    queryFn: async () => {
+      if (!actor || routineIds.length === 0) return [];
+      const results = await Promise.all(
+        routineIds.map((id) => actor.getRoutineLogs(id)),
+      );
+      return results.flat();
+    },
+    enabled: !!actor && !actorFetching && routineIds.length > 0,
+  });
+}

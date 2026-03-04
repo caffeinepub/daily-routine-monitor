@@ -4,6 +4,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertTriangle,
+  BarChart2,
   Bell,
   CalendarDays,
   CheckCircle2,
@@ -18,8 +19,9 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import type { DailyRoutineStatus } from "../backend.d";
+import type { DailyRoutineStatus, Routine } from "../backend.d";
 import {
+  useGetAllRoutineLogs,
   useGetAllRoutines,
   useGetDailyRoutinesWithStatus,
   useGetRoutineLogs,
@@ -27,13 +29,18 @@ import {
   useUpdateRoutineLogStatus,
 } from "../hooks/useQueries";
 import { useReminders } from "../hooks/useReminders";
+import { useWeekStartPreference } from "../hooks/useWeekStartPreference";
 import {
+  DAY_LABELS,
   countCompletionsInPeriod,
+  countPlannedForDate,
   formatDateFull,
-  formatFrequencyLabel,
   formatRepeatDays,
   formatTime12h,
+  getDayOfWeekForDate,
   getTodayString,
+  getWeekDates,
+  getWeekStartWithMode,
   groupRoutines,
   isFrequencyRoutine,
   parseFrequencyMeta,
@@ -383,6 +390,9 @@ function FrequencyGoalCard({
   index,
   loggingIds,
   onLog,
+  showWeeklyBadge = false,
+  onLogsLoaded,
+  weekStart,
 }: {
   routineId: bigint;
   name: string;
@@ -395,9 +405,20 @@ function FrequencyGoalCard({
   index: number;
   loggingIds: Set<string>;
   onLog: (id: bigint) => void;
+  showWeeklyBadge?: boolean;
+  onLogsLoaded?: (
+    routineId: bigint,
+    completions: number,
+    target: number,
+  ) => void;
+  weekStart?: string;
 }) {
   const { data: logs = [] } = useGetRoutineLogs(routineId);
-  const completions = countCompletionsInPeriod(logs, period);
+  const completions = countCompletionsInPeriod(
+    logs,
+    period,
+    period === "week" ? weekStart : undefined,
+  );
   const pct = Math.min(Math.round((completions / count) * 100), 100);
   const isComplete = completions >= count;
   const isLogging = loggingIds.has(routineId.toString());
@@ -406,6 +427,13 @@ function FrequencyGoalCard({
     (l) => l.date === today && l.status === "completed",
   );
   const displayDescription = stripFrequencyMeta(description);
+
+  // Report completions up to parent section for aggregate summary
+  useEffect(() => {
+    if (onLogsLoaded) {
+      onLogsLoaded(routineId, completions, count);
+    }
+  }, [onLogsLoaded, routineId, completions, count]);
 
   return (
     <motion.div
@@ -421,8 +449,8 @@ function FrequencyGoalCard({
       data-ocid={`frequency.item.${index + 1}`}
     >
       <div className="flex items-start justify-between gap-2 flex-wrap">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
             <RefreshCw
               className="w-3.5 h-3.5 shrink-0"
               style={{ color: "oklch(0.78 0.14 72)" }}
@@ -430,6 +458,26 @@ function FrequencyGoalCard({
             <h3 className="font-semibold text-sm text-foreground truncate">
               {name}
             </h3>
+            {/* Prominent weekly completion badge */}
+            {showWeeklyBadge && (
+              <span
+                className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full shrink-0"
+                style={
+                  isComplete
+                    ? {
+                        background: "oklch(0.72 0.16 150 / 0.15)",
+                        color: "oklch(0.72 0.16 150)",
+                      }
+                    : {
+                        background: "oklch(0.78 0.14 72 / 0.15)",
+                        color: "oklch(0.78 0.14 72)",
+                      }
+                }
+              >
+                {isComplete && <CheckCircle2 className="w-3 h-3" />}
+                {completions} / {count} this week
+              </span>
+            )}
           </div>
           {displayDescription && (
             <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-xs ml-5">
@@ -443,7 +491,7 @@ function FrequencyGoalCard({
           <span className="text-xs font-mono text-muted-foreground">
             {formatTime12h(scheduledTime)}
           </span>
-          {isComplete ? (
+          {isComplete && !showWeeklyBadge ? (
             <Badge
               className="text-[10px] px-2 py-0 h-5 ml-1"
               style={{
@@ -542,38 +590,130 @@ function FrequencyGoalCard({
   );
 }
 
-// ─── Frequency Goals Section ───────────────────────────────────────────────────
+// ─── Weekly / Monthly Task Sections ───────────────────────────────────────────
 
-function FrequencyGoalsSection({
-  dailyRoutines,
+/**
+ * A sub-section that renders frequency routines filtered by period.
+ * For weekly tasks, shows a prominent aggregate badge in the header
+ * and highlights each card's completion count.
+ */
+function FrequencyPeriodSection({
+  items,
+  period,
   loggingIds,
   onLog,
+  startIndex,
+  weekStart,
+  onRatioReported,
 }: {
-  dailyRoutines: DailyRoutineStatus[];
+  items: DailyRoutineStatus[];
+  period: "week" | "month";
   loggingIds: Set<string>;
   onLog: (id: bigint) => void;
+  startIndex: number;
+  weekStart?: string;
+  onRatioReported?: (
+    routineId: bigint,
+    completions: number,
+    target: number,
+  ) => void;
 }) {
-  // Filter to only frequency routines from dailyRoutines
-  const freqItems = dailyRoutines.filter((item) =>
-    isFrequencyRoutine(item.routine),
+  // Track per-routine completions reported back from each card
+  const [completionMap, setCompletionMap] = useState<
+    Map<string, { completions: number; target: number }>
+  >(new Map());
+
+  const handleLogsLoaded = useCallback(
+    (routineId: bigint, completions: number, target: number) => {
+      setCompletionMap((prev) => {
+        const key = routineId.toString();
+        const existing = prev.get(key);
+        if (
+          existing?.completions === completions &&
+          existing?.target === target
+        )
+          return prev;
+        const next = new Map(prev);
+        next.set(key, { completions, target });
+        return next;
+      });
+      if (onRatioReported) {
+        onRatioReported(routineId, completions, target);
+      }
+    },
+    [onRatioReported],
   );
 
-  if (freqItems.length === 0) return null;
+  if (items.length === 0) return null;
+
+  const isWeekly = period === "week";
+
+  // Compute aggregate totals for header summary
+  const totalCompletions = Array.from(completionMap.values()).reduce(
+    (sum, v) => sum + v.completions,
+    0,
+  );
+  const totalTarget = Array.from(completionMap.values()).reduce(
+    (sum, v) => sum + v.target,
+    0,
+  );
+  const aggregateReady = completionMap.size === items.length;
+  const aggregateComplete = aggregateReady && totalCompletions >= totalTarget;
 
   return (
     <div>
-      <div
-        className="flex items-center gap-2 mb-3"
-        style={{ color: "oklch(0.78 0.14 72)" }}
-      >
-        <RefreshCw className="w-4 h-4" />
-        <span className="text-sm font-semibold uppercase tracking-wider">
-          Frequency Goals
-        </span>
-        <span className="text-xs opacity-60">({freqItems.length})</span>
+      {/* Section header */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <div
+          className="flex items-center gap-2"
+          style={{
+            color: isWeekly ? "oklch(0.78 0.14 72)" : "oklch(0.72 0.14 280)",
+          }}
+        >
+          {isWeekly ? (
+            <CalendarDays className="w-4 h-4" />
+          ) : (
+            <RefreshCw className="w-4 h-4" />
+          )}
+          <span className="text-sm font-semibold uppercase tracking-wider">
+            {isWeekly ? "Weekly Tasks" : "Monthly Tasks"}
+          </span>
+          <span className="text-xs opacity-60">
+            ({items.length} task{items.length !== 1 ? "s" : ""})
+          </span>
+          {isWeekly && (
+            <span className="text-xs text-muted-foreground italic">
+              · Sorted by least completed first
+            </span>
+          )}
+        </div>
+
+        {/* Weekly aggregate completion pill */}
+        {isWeekly && aggregateReady && (
+          <span
+            className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full"
+            style={
+              aggregateComplete
+                ? {
+                    background: "oklch(0.72 0.16 150 / 0.15)",
+                    color: "oklch(0.72 0.16 150)",
+                  }
+                : {
+                    background: "oklch(0.78 0.14 72 / 0.12)",
+                    color: "oklch(0.78 0.14 72)",
+                  }
+            }
+            data-ocid="weekly.summary.card"
+          >
+            {aggregateComplete && <CheckCircle2 className="w-3 h-3" />}
+            {totalCompletions} / {totalTarget} completions this week
+          </span>
+        )}
       </div>
+
+      {/* Cards */}
       <div className="space-y-3">
-        {freqItems.map((item, i) => {
+        {items.map((item, i) => {
           const freqMeta = parseFrequencyMeta(item.routine.description);
           if (!freqMeta) return null;
           return (
@@ -587,14 +727,415 @@ function FrequencyGoalsSection({
               reminderOffset={item.routine.reminderOffset}
               count={freqMeta.count}
               period={freqMeta.period}
-              index={i}
+              index={startIndex + i}
               loggingIds={loggingIds}
               onLog={onLog}
+              showWeeklyBadge={isWeekly}
+              onLogsLoaded={handleLogsLoaded}
+              weekStart={weekStart}
             />
           );
         })}
       </div>
     </div>
+  );
+}
+
+// A wrapper that fetches logs for ALL weekly routines, computes ratios, sorts them,
+// then renders FrequencyPeriodSection with the sorted order.
+function WeeklyTasksSortedSection({
+  items,
+  loggingIds,
+  onLog,
+  weekStart,
+}: {
+  items: DailyRoutineStatus[];
+  loggingIds: Set<string>;
+  onLog: (id: bigint) => void;
+  weekStart: string;
+}) {
+  const [sortedItems, setSortedItems] = useState<DailyRoutineStatus[]>(items);
+  const [ratioMap, setRatioMap] = useState<Map<string, number>>(new Map());
+
+  const handleRatioReported = useCallback(
+    (routineId: bigint, completions: number, target: number) => {
+      const key = routineId.toString();
+      const ratio = target > 0 ? completions / target : 0;
+      setRatioMap((prev) => {
+        if (prev.get(key) === ratio) return prev;
+        const next = new Map(prev);
+        next.set(key, ratio);
+        return next;
+      });
+    },
+    [],
+  );
+
+  // Re-sort whenever ratioMap changes and we have all ratios
+  useEffect(() => {
+    if (ratioMap.size < items.length) return;
+    const sorted = [...items].sort((a, b) => {
+      const ra = ratioMap.get(a.routine.id.toString()) ?? 0;
+      const rb = ratioMap.get(b.routine.id.toString()) ?? 0;
+      // completed tasks (ratio >= 1) go last
+      const aComplete = ra >= 1;
+      const bComplete = rb >= 1;
+      if (aComplete && !bComplete) return 1;
+      if (!aComplete && bComplete) return -1;
+      return ra - rb; // ascending ratio (least done first)
+    });
+    setSortedItems(sorted);
+  }, [ratioMap, items]);
+
+  if (items.length === 0) return null;
+
+  return (
+    <FrequencyPeriodSection
+      items={sortedItems}
+      period="week"
+      loggingIds={loggingIds}
+      onLog={onLog}
+      startIndex={0}
+      weekStart={weekStart}
+      onRatioReported={handleRatioReported}
+    />
+  );
+}
+
+function FrequencyGoalsSection({
+  dailyRoutines,
+  loggingIds,
+  onLog,
+  weekStart,
+}: {
+  dailyRoutines: DailyRoutineStatus[];
+  loggingIds: Set<string>;
+  onLog: (id: bigint) => void;
+  weekStart: string;
+}) {
+  // Filter to only frequency routines
+  const freqItems = dailyRoutines.filter((item) =>
+    isFrequencyRoutine(item.routine),
+  );
+
+  const weeklyItems = freqItems.filter((item) => {
+    const meta = parseFrequencyMeta(item.routine.description);
+    return meta?.period === "week";
+  });
+
+  const monthlyItems = freqItems.filter((item) => {
+    const meta = parseFrequencyMeta(item.routine.description);
+    return meta?.period === "month";
+  });
+
+  if (freqItems.length === 0) return null;
+
+  return (
+    <div className="space-y-8">
+      <WeeklyTasksSortedSection
+        items={weeklyItems}
+        loggingIds={loggingIds}
+        onLog={onLog}
+        weekStart={weekStart}
+      />
+      <FrequencyPeriodSection
+        items={monthlyItems}
+        period="month"
+        loggingIds={loggingIds}
+        onLog={onLog}
+        startIndex={weeklyItems.length}
+        weekStart={weekStart}
+      />
+    </div>
+  );
+}
+
+// ─── Success Rates Panel ──────────────────────────────────────────────────────
+
+function getRateColor(rate: number | null): string {
+  if (rate === null) return "oklch(0.55 0.012 255)";
+  if (rate >= 80) return "oklch(0.72 0.16 150)";
+  if (rate >= 40) return "oklch(0.78 0.14 72)";
+  return "oklch(0.65 0.2 28)";
+}
+
+function RatePill({
+  label,
+  rate,
+  ocid,
+}: {
+  label: string;
+  rate: number | null;
+  ocid: string;
+}) {
+  const color = getRateColor(rate);
+  return (
+    <div
+      className="flex-1 rounded-xl border border-border/60 p-3 flex flex-col gap-1"
+      style={{ background: "oklch(0.165 0.012 255 / 0.6)" }}
+      data-ocid={ocid}
+    >
+      <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider leading-tight">
+        {label}
+      </span>
+      <span
+        className="text-2xl font-bold font-display leading-none"
+        style={{ color }}
+      >
+        {rate === null ? "—" : `${rate}%`}
+      </span>
+      {rate !== null && (
+        <div className="w-full h-1 rounded-full bg-muted mt-1 overflow-hidden">
+          <div
+            className="h-full rounded-full transition-all duration-700"
+            style={{ width: `${rate}%`, background: color }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SuccessRatesPanel({
+  allRoutines,
+  weekStart,
+  today,
+}: {
+  allRoutines: Routine[];
+  weekStart: string;
+  today: string;
+}) {
+  // Filter to fixed-day routines only
+  const fixedRoutines = allRoutines.filter((r) => !isFrequencyRoutine(r));
+
+  // Fetch all logs for fixed-day routines
+  const { data: logs = [], isLoading: logsLoading } = useGetAllRoutineLogs(
+    fixedRoutines.map((r) => r.id),
+  );
+
+  // Build week dates (7 days)
+  const weekDates = getWeekDates(weekStart);
+
+  // Per-day stats
+  const dayStats = weekDates.map((dateStr) => {
+    const isFuture = dateStr > today;
+    const isToday = dateStr === today;
+    const planned = countPlannedForDate(fixedRoutines, dateStr);
+    const completed = isFuture
+      ? 0
+      : logs.filter((l) => l.date === dateStr && l.status === "completed")
+          .length;
+    const rate =
+      isFuture || planned === 0
+        ? null
+        : Math.round((completed / planned) * 100);
+    const dow = getDayOfWeekForDate(dateStr);
+    const dayLabel = DAY_LABELS[dow] ?? "?";
+    const dateNum = Number.parseInt(dateStr.split("-")[2]!, 10);
+    return {
+      dateStr,
+      isFuture,
+      isToday,
+      planned,
+      completed,
+      rate,
+      dayLabel,
+      dateNum,
+    };
+  });
+
+  // Weekly totals: sum up to and including today
+  const pastDays = dayStats.filter((d) => !d.isFuture);
+  const Y = pastDays.reduce((sum, d) => sum + d.planned, 0);
+  const X = logs.filter(
+    (l) => l.date >= weekStart && l.date <= today && l.status === "completed",
+  ).length;
+  const weeklyRate = Y > 0 ? Math.round((X / Y) * 100) : null;
+
+  // Today's rate
+  const todayStats = dayStats.find((d) => d.isToday);
+  const dailyRate = todayStats?.rate ?? null;
+
+  // Chart max height px
+  const BAR_AREA_H = 120;
+
+  if (logsLoading && fixedRoutines.length > 0) {
+    return (
+      <div
+        className="rounded-2xl border border-border bg-card p-4 shadow-card-lift space-y-4"
+        data-ocid="success_rates.section"
+      >
+        <div className="flex items-center gap-2">
+          <BarChart2
+            className="w-4 h-4"
+            style={{ color: "oklch(0.78 0.14 72)" }}
+          />
+          <span className="text-sm font-semibold text-foreground uppercase tracking-wider">
+            Success Rates
+          </span>
+        </div>
+        <div className="flex gap-3">
+          <Skeleton
+            className="h-16 flex-1 rounded-xl bg-muted"
+            data-ocid="success_rates.loading_state"
+          />
+          <Skeleton className="h-16 flex-1 rounded-xl bg-muted" />
+        </div>
+        <Skeleton className="h-36 w-full rounded-xl bg-muted" />
+      </div>
+    );
+  }
+
+  if (fixedRoutines.length === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+      className="rounded-2xl border border-border bg-card p-4 shadow-card-lift space-y-4"
+      data-ocid="success_rates.section"
+    >
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <BarChart2
+          className="w-4 h-4"
+          style={{ color: "oklch(0.78 0.14 72)" }}
+        />
+        <span className="text-sm font-semibold text-foreground uppercase tracking-wider">
+          Success Rates
+        </span>
+      </div>
+
+      {/* Stat pills */}
+      <div className="flex gap-3">
+        <RatePill
+          label="Weekly Routine Success"
+          rate={weeklyRate}
+          ocid="success_rates.weekly_rate.card"
+        />
+        <RatePill
+          label="Daily Success (Today)"
+          rate={dailyRate}
+          ocid="success_rates.daily_rate.card"
+        />
+      </div>
+
+      {/* Bar chart */}
+      <div
+        className="rounded-xl border border-border/50 p-3"
+        style={{ background: "oklch(0.13 0.008 260 / 0.6)" }}
+        data-ocid="success_rates.chart.panel"
+      >
+        <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+          Daily Success Rate — This Week
+        </p>
+        <div
+          className="flex items-end gap-1.5"
+          style={{ height: `${BAR_AREA_H + 36}px` }}
+        >
+          {dayStats.map((day) => {
+            const barColor = day.isToday
+              ? "oklch(0.78 0.14 72)"
+              : day.rate === null
+                ? "oklch(0.28 0.015 255 / 0.5)"
+                : getRateColor(day.rate);
+
+            const barHeight =
+              day.isFuture || day.planned === 0
+                ? 8
+                : Math.max(8, Math.round(((day.rate ?? 0) / 100) * BAR_AREA_H));
+
+            return (
+              <div
+                key={day.dateStr}
+                className="flex-1 flex flex-col items-center gap-0.5"
+              >
+                {/* "Today" label or percentage above bar */}
+                <div
+                  className="text-center leading-none"
+                  style={{
+                    height: "20px",
+                    display: "flex",
+                    alignItems: "flex-end",
+                    justifyContent: "center",
+                  }}
+                >
+                  {day.isToday ? (
+                    <span
+                      className="text-[9px] font-bold uppercase tracking-wider px-1 py-0.5 rounded"
+                      style={{
+                        background: "oklch(0.78 0.14 72 / 0.2)",
+                        color: "oklch(0.78 0.14 72)",
+                      }}
+                    >
+                      Today
+                    </span>
+                  ) : day.isFuture ? (
+                    <span className="text-[9px] text-muted-foreground/40">
+                      —
+                    </span>
+                  ) : day.planned === 0 ? (
+                    <span className="text-[9px] text-muted-foreground/40 leading-none text-center">
+                      no
+                      <br />
+                      tasks
+                    </span>
+                  ) : (
+                    <span
+                      className="text-[10px] font-semibold"
+                      style={{ color: getRateColor(day.rate) }}
+                    >
+                      {day.rate}%
+                    </span>
+                  )}
+                </div>
+
+                {/* Bar */}
+                <div
+                  className="w-full flex items-end"
+                  style={{ height: `${BAR_AREA_H}px` }}
+                >
+                  <div
+                    className="w-full rounded-t-md transition-all duration-500"
+                    style={{
+                      height: `${barHeight}px`,
+                      background: barColor,
+                      opacity: day.isFuture ? 0.25 : 1,
+                      border: day.isFuture
+                        ? "1px solid oklch(0.4 0.015 255 / 0.5)"
+                        : "none",
+                      borderBottom: "none",
+                      boxShadow: day.isToday
+                        ? "0 0 12px oklch(0.78 0.14 72 / 0.35)"
+                        : "none",
+                    }}
+                  />
+                </div>
+
+                {/* Day label */}
+                <span
+                  className="text-[10px] font-medium mt-1"
+                  style={{
+                    color: day.isToday
+                      ? "oklch(0.78 0.14 72)"
+                      : "oklch(0.55 0.012 255)",
+                  }}
+                >
+                  {day.dayLabel}
+                </span>
+                <span
+                  className="text-[9px]"
+                  style={{ color: "oklch(0.42 0.012 255)" }}
+                >
+                  {day.dateNum}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </motion.div>
   );
 }
 
@@ -607,6 +1148,8 @@ export default function DashboardPage({
   const today = getTodayString();
   const [now, setNow] = useState(new Date());
   const [loggingIds, setLoggingIds] = useState<Set<string>>(new Set());
+  const { mode: weekMode } = useWeekStartPreference();
+  const weekStart = getWeekStartWithMode(weekMode);
 
   const { data: allRoutineData = [], isLoading } =
     useGetDailyRoutinesWithStatus(today);
@@ -721,9 +1264,6 @@ export default function DashboardPage({
 
   const hasAnyContent = allRoutineData.length > 0;
 
-  // Suppress allRoutines unused warning — it's used for reminder context
-  void allRoutines;
-
   return (
     <div className="min-h-screen pb-20 md:pb-8" data-ocid="dashboard.section">
       {/* Header with clock */}
@@ -805,6 +1345,17 @@ export default function DashboardPage({
         </div>
       </div>
 
+      {/* Success Rates Panel — shown when content exists */}
+      {hasAnyContent && (
+        <div className="max-w-3xl mx-auto px-4 md:px-8 pt-6">
+          <SuccessRatesPanel
+            allRoutines={allRoutines}
+            weekStart={weekStart}
+            today={today}
+          />
+        </div>
+      )}
+
       {/* Content */}
       <div className="max-w-3xl mx-auto px-4 md:px-8 py-6">
         {isLoading ? (
@@ -858,14 +1409,7 @@ export default function DashboardPage({
               animate={{ opacity: 1 }}
               className="space-y-8"
             >
-              {/* Frequency Goals section */}
-              <FrequencyGoalsSection
-                dailyRoutines={allRoutineData}
-                loggingIds={loggingIds}
-                onLog={(id) => handleLog(id, "completed")}
-              />
-
-              {/* Fixed-day routine groups */}
+              {/* Fixed-day routine groups: Overdue → Due Soon → Upcoming → Completed → Skipped */}
               {(
                 [
                   "overdue",
@@ -886,6 +1430,14 @@ export default function DashboardPage({
                   loggingIds={loggingIds}
                 />
               ))}
+
+              {/* Weekly / Monthly frequency goals section */}
+              <FrequencyGoalsSection
+                dailyRoutines={allRoutineData}
+                loggingIds={loggingIds}
+                onLog={(id) => handleLog(id, "completed")}
+                weekStart={weekStart}
+              />
             </motion.div>
           </AnimatePresence>
         )}
