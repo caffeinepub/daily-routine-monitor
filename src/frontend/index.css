@@ -1,0 +1,174 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --radius: 0.5rem;
+
+    /* Deep ink dark theme — industrial productivity command center */
+    --background: 0.13 0.008 260;
+    --foreground: 0.94 0.012 80;
+    --card: 0.165 0.012 255;
+    --card-foreground: 0.94 0.012 80;
+    --popover: 0.18 0.012 255;
+    --popover-foreground: 0.94 0.012 80;
+
+    /* Amber gold primary */
+    --primary: 0.78 0.14 72;
+    --primary-foreground: 0.12 0.008 260;
+
+    /* Subtle secondary */
+    --secondary: 0.22 0.015 255;
+    --secondary-foreground: 0.82 0.012 80;
+
+    /* Muted tones */
+    --muted: 0.2 0.012 255;
+    --muted-foreground: 0.58 0.015 255;
+
+    /* Warm accent */
+    --accent: 0.25 0.02 255;
+    --accent-foreground: 0.88 0.012 80;
+
+    /* Destructive */
+    --destructive: 0.6 0.21 22;
+    --destructive-foreground: 0.98 0 0;
+
+    /* Borders and inputs */
+    --border: 0.28 0.015 255;
+    --input: 0.24 0.015 255;
+    --ring: 0.78 0.14 72;
+
+    /* Status colors */
+    --success: 0.72 0.16 150;
+    --success-foreground: 0.12 0.008 260;
+    --warning: 0.75 0.16 50;
+    --warning-foreground: 0.12 0.008 260;
+    --overdue: 0.65 0.2 28;
+    --overdue-foreground: 0.98 0 0;
+    --due-soon: 0.78 0.14 72;
+    --due-soon-foreground: 0.12 0.008 260;
+
+    /* Charts */
+    --chart-1: 0.78 0.14 72;
+    --chart-2: 0.72 0.16 150;
+    --chart-3: 0.6 0.21 22;
+    --chart-4: 0.65 0.18 200;
+    --chart-5: 0.75 0.16 50;
+
+    /* Sidebar */
+    --sidebar: 0.105 0.008 260;
+    --sidebar-foreground: 0.82 0.012 80;
+    --sidebar-primary: 0.78 0.14 72;
+    --sidebar-primary-foreground: 0.12 0.008 260;
+    --sidebar-accent: 0.18 0.012 255;
+    --sidebar-accent-foreground: 0.88 0.012 80;
+    --sidebar-border: 0.22 0.015 255;
+    --sidebar-ring: 0.78 0.14 72;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Outfit', 'Plus Jakarta Sans', 'Segoe UI', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Bricolage Grotesque', 'Cabinet Grotesk', 'Segoe UI', system-ui, sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer utilities {
+  .text-success { color: oklch(var(--success)); }
+  .text-warning { color: oklch(var(--warning)); }
+  .text-overdue { color: oklch(var(--overdue)); }
+  .text-due-soon { color: oklch(var(--due-soon)); }
+
+  .bg-success { background-color: oklch(var(--success)); }
+  .bg-warning { background-color: oklch(var(--warning)); }
+  .bg-overdue { background-color: oklch(var(--overdue)); }
+  .bg-due-soon { background-color: oklch(var(--due-soon)); }
+
+  .bg-success\/10 { background-color: oklch(var(--success) / 0.1); }
+  .bg-warning\/10 { background-color: oklch(var(--warning) / 0.1); }
+  .bg-overdue\/10 { background-color: oklch(var(--overdue) / 0.1); }
+  .bg-due-soon\/10 { background-color: oklch(var(--due-soon) / 0.1); }
+  .bg-overdue\/20 { background-color: oklch(var(--overdue) / 0.2); }
+  .bg-due-soon\/20 { background-color: oklch(var(--due-soon) / 0.2); }
+
+  .border-success { border-color: oklch(var(--success)); }
+  .border-warning { border-color: oklch(var(--warning)); }
+  .border-overdue { border-color: oklch(var(--overdue)); }
+  .border-due-soon { border-color: oklch(var(--due-soon)); }
+
+  .ring-overdue { --tw-ring-color: oklch(var(--overdue)); }
+  .ring-due-soon { --tw-ring-color: oklch(var(--due-soon)); }
+
+  /* Noise overlay for texture */
+  .bg-noise {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  }
+}
+
+/* Pulsing glow animation for urgent items */
+@keyframes urgent-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 oklch(var(--overdue) / 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 6px oklch(var(--overdue) / 0);
+  }
+}
+
+@keyframes due-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 oklch(var(--due-soon) / 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 6px oklch(var(--due-soon) / 0);
+  }
+}
+
+.animate-urgent-pulse {
+  animation: urgent-pulse 2s ease-in-out infinite;
+}
+
+.animate-due-pulse {
+  animation: due-pulse 2.5s ease-in-out infinite;
+}
+
+/* Smooth dot indicator */
+@keyframes blink-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.animate-blink-dot {
+  animation: blink-dot 1.5s ease-in-out infinite;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: oklch(var(--background));
+}
+
+::-webkit-scrollbar-thumb {
+  background: oklch(var(--border));
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(var(--muted-foreground));
+}
