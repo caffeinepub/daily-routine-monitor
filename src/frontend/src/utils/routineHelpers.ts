@@ -253,6 +253,21 @@ export function isFrequencyRoutine(routine: Routine): boolean {
   return nums.join(",") === "0,1,2,3,4,5,6";
 }
 
+/** Returns true if this routine is scheduled every single day.
+ *  - Specific-days mode: all 7 days selected (0–6)
+ *  - Flexible-frequency mode: 7× per week
+ */
+export function isDailyRoutine(routine: Routine): boolean {
+  const freqMeta = parseFrequencyMeta(routine.description);
+  if (freqMeta !== null) {
+    // Flexible frequency: daily only if 7× per week
+    return freqMeta.period === "week" && freqMeta.count === 7;
+  }
+  // Specific days: daily only if all 7 days selected
+  const nums = routine.repeatDays.map(Number).sort();
+  return nums.join(",") === "0,1,2,3,4,5,6";
+}
+
 /** Format frequency as a readable label */
 export function formatFrequencyLabel(
   count: number,

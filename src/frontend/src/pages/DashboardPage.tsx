@@ -38,6 +38,7 @@ import { useWeekStartPreference } from "../hooks/useWeekStartPreference";
 import type { WeekStartMode } from "../utils/routineHelpers";
 import {
   DAY_LABELS,
+  classifyRoutine,
   computeCategoryPastNWeeksRates,
   computeCategoryWeeklyRates,
   computeDailyWeightedRatesForWeek,
@@ -55,6 +56,7 @@ import {
   getWeekDates,
   getWeekStartWithMode,
   groupRoutines,
+  isDailyRoutine,
   isFrequencyRoutine,
   loadCategoryWeights,
   parseCategoryMeta,
@@ -365,106 +367,6 @@ function CategorySubLabel({ name }: { name: string }) {
   );
 }
 
-// ─── Group Section ─────────────────────────────────────────────────────────────
-
-function GroupSection({
-  groupKey,
-  items,
-  onDone,
-  onSkip,
-  onUndo,
-  onMarkDone,
-  loggingIds,
-}: {
-  groupKey: GroupKey;
-  items: DailyRoutineStatus[];
-  onDone: (id: bigint) => void;
-  onSkip: (id: bigint) => void;
-  onUndo: (id: bigint) => void;
-  onMarkDone: (id: bigint) => void;
-  loggingIds: Set<string>;
-}) {
-  if (items.length === 0) return null;
-  const config = GROUP_CONFIG[groupKey];
-  const Icon = config.icon;
-
-  // Group by category. Preserve insertion order.
-  const categoryMap = new Map<string, DailyRoutineStatus[]>();
-  for (const item of items) {
-    const cat = parseCategoryMeta(item.routine.description) ?? "";
-    if (!categoryMap.has(cat)) categoryMap.set(cat, []);
-    categoryMap.get(cat)!.push(item);
-  }
-
-  const showCategoryLabels =
-    categoryMap.size > 1 ||
-    (categoryMap.size === 1 && categoryMap.keys().next().value !== "");
-
-  // Build ordered list: named categories first, then uncategorised
-  const orderedGroups: { catName: string; catItems: DailyRoutineStatus[] }[] =
-    [];
-  for (const [cat, catItems] of categoryMap.entries()) {
-    if (cat !== "") orderedGroups.push({ catName: cat, catItems });
-  }
-  const uncatItems = categoryMap.get("") ?? [];
-  if (uncatItems.length > 0) {
-    orderedGroups.push({ catName: "Uncategorised", catItems: uncatItems });
-  }
-
-  let cardIndex = 0;
-
-  return (
-    <div>
-      <div className={`flex items-center gap-2 mb-3 ${config.className}`}>
-        <Icon className="w-4 h-4" />
-        <span className="text-sm font-semibold uppercase tracking-wider">
-          {config.label}
-        </span>
-        <span className="text-xs opacity-60">({items.length})</span>
-      </div>
-      <div className="space-y-1">
-        {showCategoryLabels
-          ? orderedGroups.map(({ catName, catItems }) => (
-              <div key={catName}>
-                <CategorySubLabel name={catName} />
-                <div className="space-y-2.5 pl-0">
-                  {catItems.map((item) => {
-                    const idx = cardIndex++;
-                    return (
-                      <RoutineCard
-                        key={item.routine.id.toString()}
-                        item={item}
-                        group={groupKey}
-                        index={idx}
-                        onDone={() => onDone(item.routine.id)}
-                        onSkip={() => onSkip(item.routine.id)}
-                        onUndo={() => onUndo(item.routine.id)}
-                        onMarkDone={() => onMarkDone(item.routine.id)}
-                        isLogging={loggingIds.has(item.routine.id.toString())}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-            ))
-          : items.map((item, i) => (
-              <RoutineCard
-                key={item.routine.id.toString()}
-                item={item}
-                group={groupKey}
-                index={i}
-                onDone={() => onDone(item.routine.id)}
-                onSkip={() => onSkip(item.routine.id)}
-                onUndo={() => onUndo(item.routine.id)}
-                onMarkDone={() => onMarkDone(item.routine.id)}
-                isLogging={loggingIds.has(item.routine.id.toString())}
-              />
-            ))}
-      </div>
-    </div>
-  );
-}
-
 // ─── Frequency Goal Card ───────────────────────────────────────────────────────
 
 function FrequencyGoalCard({
@@ -676,327 +578,6 @@ function FrequencyGoalCard({
         </div>
       )}
     </motion.div>
-  );
-}
-
-// ─── Weekly / Monthly Task Sections ───────────────────────────────────────────
-
-/**
- * A sub-section that renders frequency routines filtered by period.
- * For weekly tasks, shows a prominent aggregate badge in the header
- * and highlights each card's completion count.
- */
-function FrequencyPeriodSection({
-  items,
-  period,
-  loggingIds,
-  onLog,
-  startIndex,
-  weekStart,
-  onRatioReported,
-}: {
-  items: DailyRoutineStatus[];
-  period: "week" | "month";
-  loggingIds: Set<string>;
-  onLog: (id: bigint) => void;
-  startIndex: number;
-  weekStart?: string;
-  onRatioReported?: (
-    routineId: bigint,
-    completions: number,
-    target: number,
-  ) => void;
-}) {
-  // Track per-routine completions reported back from each card
-  const [completionMap, setCompletionMap] = useState<
-    Map<string, { completions: number; target: number }>
-  >(new Map());
-
-  const handleLogsLoaded = useCallback(
-    (routineId: bigint, completions: number, target: number) => {
-      setCompletionMap((prev) => {
-        const key = routineId.toString();
-        const existing = prev.get(key);
-        if (
-          existing?.completions === completions &&
-          existing?.target === target
-        )
-          return prev;
-        const next = new Map(prev);
-        next.set(key, { completions, target });
-        return next;
-      });
-      if (onRatioReported) {
-        onRatioReported(routineId, completions, target);
-      }
-    },
-    [onRatioReported],
-  );
-
-  if (items.length === 0) return null;
-
-  const isWeekly = period === "week";
-
-  // Compute aggregate totals for header summary
-  const totalCompletions = Array.from(completionMap.values()).reduce(
-    (sum, v) => sum + v.completions,
-    0,
-  );
-  const totalTarget = Array.from(completionMap.values()).reduce(
-    (sum, v) => sum + v.target,
-    0,
-  );
-  const aggregateReady = completionMap.size === items.length;
-  const aggregateComplete = aggregateReady && totalCompletions >= totalTarget;
-
-  // Group frequency items by category
-  const categoryMap = new Map<string, DailyRoutineStatus[]>();
-  for (const item of items) {
-    const cat = parseCategoryMeta(item.routine.description) ?? "";
-    if (!categoryMap.has(cat)) categoryMap.set(cat, []);
-    categoryMap.get(cat)!.push(item);
-  }
-  const showCategoryLabels =
-    categoryMap.size > 1 ||
-    (categoryMap.size === 1 && categoryMap.keys().next().value !== "");
-
-  const orderedCatGroups: {
-    catName: string;
-    catItems: DailyRoutineStatus[];
-  }[] = [];
-  for (const [cat, catItems] of categoryMap.entries()) {
-    if (cat !== "") orderedCatGroups.push({ catName: cat, catItems });
-  }
-  const uncatItems = categoryMap.get("") ?? [];
-  if (uncatItems.length > 0) {
-    orderedCatGroups.push({ catName: "Uncategorised", catItems: uncatItems });
-  }
-
-  let cardIndex = startIndex;
-
-  return (
-    <div>
-      {/* Section header */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <div
-          className="flex items-center gap-2"
-          style={{
-            color: isWeekly ? "oklch(0.78 0.14 72)" : "oklch(0.72 0.14 280)",
-          }}
-        >
-          {isWeekly ? (
-            <CalendarDays className="w-4 h-4" />
-          ) : (
-            <RefreshCw className="w-4 h-4" />
-          )}
-          <span className="text-sm font-semibold uppercase tracking-wider">
-            {isWeekly ? "Weekly Tasks" : "Monthly Tasks"}
-          </span>
-          <span className="text-xs opacity-60">
-            ({items.length} task{items.length !== 1 ? "s" : ""})
-          </span>
-          {isWeekly && (
-            <span className="text-xs text-muted-foreground italic">
-              · Sorted by least completed first
-            </span>
-          )}
-        </div>
-
-        {/* Weekly aggregate completion pill */}
-        {isWeekly && aggregateReady && (
-          <span
-            className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-0.5 rounded-full"
-            style={
-              aggregateComplete
-                ? {
-                    background: "oklch(0.72 0.16 150 / 0.15)",
-                    color: "oklch(0.72 0.16 150)",
-                  }
-                : {
-                    background: "oklch(0.78 0.14 72 / 0.12)",
-                    color: "oklch(0.78 0.14 72)",
-                  }
-            }
-            data-ocid="weekly.summary.card"
-          >
-            {aggregateComplete && <CheckCircle2 className="w-3 h-3" />}
-            {totalCompletions} / {totalTarget} completions this week
-          </span>
-        )}
-      </div>
-
-      {/* Cards — with optional category sub-groups */}
-      {showCategoryLabels ? (
-        <div className="space-y-1">
-          {orderedCatGroups.map(({ catName, catItems }) => (
-            <div key={catName}>
-              <CategorySubLabel name={catName} />
-              <div className="space-y-3">
-                {catItems.map((item) => {
-                  const freqMeta = parseFrequencyMeta(item.routine.description);
-                  if (!freqMeta) return null;
-                  const idx = cardIndex++;
-                  return (
-                    <FrequencyGoalCard
-                      key={item.routine.id.toString()}
-                      routineId={item.routine.id}
-                      name={item.routine.name}
-                      description={item.routine.description}
-                      scheduledTime={item.routine.scheduledTime}
-                      reminderEnabled={item.routine.reminderEnabled}
-                      reminderOffset={item.routine.reminderOffset}
-                      count={freqMeta.count}
-                      period={freqMeta.period}
-                      index={idx}
-                      loggingIds={loggingIds}
-                      onLog={onLog}
-                      showWeeklyBadge={isWeekly}
-                      onLogsLoaded={handleLogsLoaded}
-                      weekStart={weekStart}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {items.map((item, i) => {
-            const freqMeta = parseFrequencyMeta(item.routine.description);
-            if (!freqMeta) return null;
-            return (
-              <FrequencyGoalCard
-                key={item.routine.id.toString()}
-                routineId={item.routine.id}
-                name={item.routine.name}
-                description={item.routine.description}
-                scheduledTime={item.routine.scheduledTime}
-                reminderEnabled={item.routine.reminderEnabled}
-                reminderOffset={item.routine.reminderOffset}
-                count={freqMeta.count}
-                period={freqMeta.period}
-                index={startIndex + i}
-                loggingIds={loggingIds}
-                onLog={onLog}
-                showWeeklyBadge={isWeekly}
-                onLogsLoaded={handleLogsLoaded}
-                weekStart={weekStart}
-              />
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// A wrapper that fetches logs for ALL weekly routines, computes ratios, sorts them,
-// then renders FrequencyPeriodSection with the sorted order.
-function WeeklyTasksSortedSection({
-  items,
-  loggingIds,
-  onLog,
-  weekStart,
-}: {
-  items: DailyRoutineStatus[];
-  loggingIds: Set<string>;
-  onLog: (id: bigint) => void;
-  weekStart: string;
-}) {
-  const [sortedItems, setSortedItems] = useState<DailyRoutineStatus[]>(items);
-  const [ratioMap, setRatioMap] = useState<Map<string, number>>(new Map());
-
-  const handleRatioReported = useCallback(
-    (routineId: bigint, completions: number, target: number) => {
-      const key = routineId.toString();
-      const ratio = target > 0 ? completions / target : 0;
-      setRatioMap((prev) => {
-        if (prev.get(key) === ratio) return prev;
-        const next = new Map(prev);
-        next.set(key, ratio);
-        return next;
-      });
-    },
-    [],
-  );
-
-  // Re-sort whenever ratioMap changes and we have all ratios
-  useEffect(() => {
-    if (ratioMap.size < items.length) return;
-    const sorted = [...items].sort((a, b) => {
-      const ra = ratioMap.get(a.routine.id.toString()) ?? 0;
-      const rb = ratioMap.get(b.routine.id.toString()) ?? 0;
-      // completed tasks (ratio >= 1) go last
-      const aComplete = ra >= 1;
-      const bComplete = rb >= 1;
-      if (aComplete && !bComplete) return 1;
-      if (!aComplete && bComplete) return -1;
-      return ra - rb; // ascending ratio (least done first)
-    });
-    setSortedItems(sorted);
-  }, [ratioMap, items]);
-
-  if (items.length === 0) return null;
-
-  return (
-    <FrequencyPeriodSection
-      items={sortedItems}
-      period="week"
-      loggingIds={loggingIds}
-      onLog={onLog}
-      startIndex={0}
-      weekStart={weekStart}
-      onRatioReported={handleRatioReported}
-    />
-  );
-}
-
-function FrequencyGoalsSection({
-  dailyRoutines,
-  loggingIds,
-  onLog,
-  weekStart,
-}: {
-  dailyRoutines: DailyRoutineStatus[];
-  loggingIds: Set<string>;
-  onLog: (id: bigint) => void;
-  weekStart: string;
-}) {
-  // Filter to only frequency routines
-  const freqItems = dailyRoutines.filter((item) =>
-    isFrequencyRoutine(item.routine),
-  );
-
-  const weeklyItems = freqItems.filter((item) => {
-    const meta = parseFrequencyMeta(item.routine.description);
-    return meta?.period === "week";
-  });
-
-  const monthlyItems = freqItems.filter((item) => {
-    const meta = parseFrequencyMeta(item.routine.description);
-    return meta?.period === "month";
-  });
-
-  if (freqItems.length === 0) return null;
-
-  return (
-    <div className="space-y-8">
-      <WeeklyTasksSortedSection
-        items={weeklyItems}
-        loggingIds={loggingIds}
-        onLog={onLog}
-        weekStart={weekStart}
-      />
-      <FrequencyPeriodSection
-        items={monthlyItems}
-        period="month"
-        loggingIds={loggingIds}
-        onLog={onLog}
-        startIndex={weeklyItems.length}
-        weekStart={weekStart}
-      />
-    </div>
   );
 }
 
@@ -1730,6 +1311,1036 @@ function WeightedSuccessPanel({
   );
 }
 
+// ─── View Mode Types & Persistence ────────────────────────────────────────────
+
+type ViewMode = "completion" | "category" | "frequency";
+const VIEW_MODE_KEY = "drm_view_mode";
+
+function loadViewMode(): ViewMode {
+  try {
+    const raw = localStorage.getItem(VIEW_MODE_KEY);
+    if (raw === "completion" || raw === "category" || raw === "frequency")
+      return raw;
+  } catch {
+    // ignore
+  }
+  return "completion";
+}
+
+function saveViewMode(mode: ViewMode): void {
+  try {
+    localStorage.setItem(VIEW_MODE_KEY, mode);
+  } catch {
+    // ignore
+  }
+}
+
+// ─── View Mode Selector ────────────────────────────────────────────────────────
+
+function ViewModeSelector({
+  value,
+  onChange,
+}: {
+  value: ViewMode;
+  onChange: (mode: ViewMode) => void;
+}) {
+  const tabs: {
+    id: ViewMode;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    ocid: string;
+  }[] = [
+    {
+      id: "completion",
+      label: "Completion Wise",
+      icon: CheckCircle2,
+      ocid: "dashboard.view_mode.completion.tab",
+    },
+    {
+      id: "category",
+      label: "Category Wise",
+      icon: Tag,
+      ocid: "dashboard.view_mode.category.tab",
+    },
+    {
+      id: "frequency",
+      label: "Frequency Wise",
+      icon: RefreshCw,
+      ocid: "dashboard.view_mode.frequency.tab",
+    },
+  ];
+
+  return (
+    <div
+      className="rounded-2xl border border-border/60 overflow-hidden shadow-card-lift"
+      style={{ background: "oklch(0.155 0.01 255)" }}
+    >
+      {/* Label row */}
+      <div
+        className="px-4 py-2 border-b border-border/40 flex items-center gap-2"
+        style={{ background: "oklch(0.145 0.01 258)" }}
+      >
+        <BarChart2
+          className="w-3.5 h-3.5"
+          style={{ color: "oklch(0.78 0.14 72)" }}
+        />
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          View Tasks By
+        </span>
+      </div>
+      {/* Tab row */}
+      <div className="grid grid-cols-3 p-1.5 gap-1.5">
+        {tabs.map((tab) => {
+          const Icon = tab.icon;
+          const isActive = value === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => onChange(tab.id)}
+              data-ocid={tab.ocid}
+              className="relative flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-1.5 px-3 py-3 rounded-xl text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+              style={
+                isActive
+                  ? {
+                      background: "oklch(0.78 0.14 72 / 0.14)",
+                      boxShadow:
+                        "0 0 0 1.5px oklch(0.78 0.14 72 / 0.5), 0 2px 8px oklch(0.78 0.14 72 / 0.1)",
+                      color: "oklch(0.78 0.14 72)",
+                    }
+                  : {
+                      background: "transparent",
+                      color: "oklch(0.55 0.012 255)",
+                    }
+              }
+            >
+              <Icon
+                className={`w-4 h-4 shrink-0 ${isActive ? "opacity-100" : "opacity-60"}`}
+              />
+              <span
+                className={`text-xs font-semibold leading-tight text-center sm:text-left ${isActive ? "opacity-100" : "opacity-60"}`}
+              >
+                {tab.label}
+              </span>
+              {isActive && (
+                <motion.div
+                  layoutId="viewmode-indicator"
+                  className="absolute inset-0 rounded-xl pointer-events-none"
+                  style={{
+                    boxShadow: "inset 0 0 0 1.5px oklch(0.78 0.14 72 / 0.4)",
+                  }}
+                  transition={{ type: "spring", stiffness: 500, damping: 40 }}
+                />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Status Classification Helpers ────────────────────────────────────────────
+
+/** Get simple completion status for a fixed-day routine */
+function getFixedDayStatus(
+  item: DailyRoutineStatus,
+): "incomplete" | "complete" | "skipped" {
+  if (item.status === "completed") return "complete";
+  if (item.status === "skipped") return "skipped";
+  return "incomplete";
+}
+
+/** Returns category names sorted by descending weight, with Uncategorised last */
+function getOrderedCategories(
+  items: DailyRoutineStatus[],
+  categoryWeights: { name: string; weight: number }[],
+): string[] {
+  // Build a set of category names present in the items
+  const presentCats = new Set<string>();
+  let hasUncategorised = false;
+  for (const item of items) {
+    const cat = parseCategoryMeta(item.routine.description);
+    if (cat) {
+      presentCats.add(cat);
+    } else {
+      hasUncategorised = true;
+    }
+  }
+
+  // Sort by weight descending, only include categories present in items
+  const sorted = [...categoryWeights]
+    .filter((cw) => presentCats.has(cw.name))
+    .sort((a, b) => b.weight - a.weight)
+    .map((cw) => cw.name);
+
+  // Add any categories not in weights (edge case)
+  for (const cat of presentCats) {
+    if (!sorted.includes(cat)) sorted.push(cat);
+  }
+
+  if (hasUncategorised) sorted.push("Uncategorised");
+  return sorted;
+}
+
+/** Group items by category, respecting weight order */
+function groupByCategory(
+  items: DailyRoutineStatus[],
+  orderedCategories: string[],
+): { catName: string; catItems: DailyRoutineStatus[] }[] {
+  const map = new Map<string, DailyRoutineStatus[]>();
+  for (const item of items) {
+    const cat = parseCategoryMeta(item.routine.description) ?? "Uncategorised";
+    if (!map.has(cat)) map.set(cat, []);
+    map.get(cat)!.push(item);
+  }
+  const result: { catName: string; catItems: DailyRoutineStatus[] }[] = [];
+  for (const catName of orderedCategories) {
+    const catItems = map.get(catName);
+    if (catItems && catItems.length > 0) result.push({ catName, catItems });
+  }
+  return result;
+}
+
+// ─── Sub-section header components ────────────────────────────────────────────
+
+function CompletionStatusHeader({
+  status,
+  count,
+}: {
+  status: "incomplete" | "complete" | "skipped";
+  count: number;
+}) {
+  if (status === "incomplete") {
+    return (
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Clock className="w-4 h-4" />
+        <span className="text-sm font-semibold uppercase tracking-wider">
+          Incomplete
+        </span>
+        <span className="text-xs opacity-60">({count})</span>
+      </div>
+    );
+  }
+  if (status === "complete") {
+    return (
+      <div
+        className="flex items-center gap-2"
+        style={{ color: "oklch(0.72 0.16 150)" }}
+      >
+        <CheckCircle2 className="w-4 h-4" />
+        <span className="text-sm font-semibold uppercase tracking-wider">
+          Completed
+        </span>
+        <span className="text-xs opacity-60">({count})</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 text-muted-foreground">
+      <XCircle className="w-4 h-4" />
+      <span className="text-sm font-semibold uppercase tracking-wider">
+        Skipped
+      </span>
+      <span className="text-xs opacity-60">({count})</span>
+    </div>
+  );
+}
+
+function FrequencyTypeHeader({
+  type,
+}: {
+  type: "daily" | "weekly";
+}) {
+  if (type === "daily") {
+    return (
+      <div
+        className="flex items-center gap-1.5 mt-2 mb-1.5"
+        style={{ color: "oklch(0.78 0.14 72)" }}
+      >
+        <CalendarDays className="w-3.5 h-3.5 shrink-0" />
+        <span className="text-xs font-semibold uppercase tracking-wider">
+          Daily Tasks
+        </span>
+        <div
+          className="flex-1 h-px"
+          style={{ background: "oklch(0.78 0.14 72 / 0.2)" }}
+        />
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flex items-center gap-1.5 mt-2 mb-1.5"
+      style={{ color: "oklch(0.72 0.14 280)" }}
+    >
+      <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+      <span className="text-xs font-semibold uppercase tracking-wider">
+        Weekly Tasks
+      </span>
+      <div
+        className="flex-1 h-px"
+        style={{ background: "oklch(0.72 0.14 280 / 0.2)" }}
+      />
+    </div>
+  );
+}
+
+// ─── Shared props type for all three view components ─────────────────────────
+
+interface ViewProps {
+  allRoutineData: DailyRoutineStatus[];
+  loggingIds: Set<string>;
+  onDone: (id: bigint) => void;
+  onSkip: (id: bigint) => void;
+  onUndo: (id: bigint) => void;
+  onMarkDone: (id: bigint) => void;
+  weekStart: string;
+  now: Date;
+  freqLogs: Map<string, { completions: number; count: number }>;
+}
+
+// ─── Completion Wise View ──────────────────────────────────────────────────────
+
+function CompletionWiseView({
+  allRoutineData,
+  loggingIds,
+  onDone,
+  onSkip,
+  onUndo,
+  onMarkDone,
+  weekStart,
+  now,
+  freqLogs,
+}: ViewProps) {
+  const categoryWeights = useMemo(() => loadCategoryWeights(), []);
+
+  // Classify by new Daily/Weekly rule (isDailyRoutine) — for section headers
+  const dailyItems = allRoutineData.filter((item) =>
+    isDailyRoutine(item.routine),
+  );
+  const weeklyItems = allRoutineData.filter(
+    (item) => !isDailyRoutine(item.routine),
+  );
+
+  // Within daily items, determine completion status
+  const dailyIncomplete = dailyItems.filter((item) => {
+    if (isFrequencyRoutine(item.routine)) {
+      const info = freqLogs.get(item.routine.id.toString());
+      if (!info) return true;
+      return info.completions < info.count;
+    }
+    return getFixedDayStatus(item) === "incomplete";
+  });
+  const dailyComplete = dailyItems.filter((item) => {
+    if (isFrequencyRoutine(item.routine)) {
+      const info = freqLogs.get(item.routine.id.toString());
+      if (!info) return false;
+      return info.completions >= info.count;
+    }
+    return getFixedDayStatus(item) === "complete";
+  });
+  const dailySkipped = dailyItems.filter((item) => {
+    if (isFrequencyRoutine(item.routine)) {
+      return item.status === "skipped";
+    }
+    return getFixedDayStatus(item) === "skipped";
+  });
+
+  // Within weekly items, determine completion status
+  const weeklyIncomplete = weeklyItems.filter((item) => {
+    if (isFrequencyRoutine(item.routine)) {
+      const info = freqLogs.get(item.routine.id.toString());
+      if (!info) return true;
+      return info.completions < info.count;
+    }
+    return getFixedDayStatus(item) === "incomplete";
+  });
+  const weeklyComplete = weeklyItems.filter((item) => {
+    if (isFrequencyRoutine(item.routine)) {
+      const info = freqLogs.get(item.routine.id.toString());
+      if (!info) return false;
+      return info.completions >= info.count;
+    }
+    return getFixedDayStatus(item) === "complete";
+  });
+  const weeklySkipped = weeklyItems.filter((item) => {
+    if (isFrequencyRoutine(item.routine)) {
+      return item.status === "skipped";
+    }
+    return getFixedDayStatus(item) === "skipped";
+  });
+
+  const allIncomplete = [...dailyIncomplete, ...weeklyIncomplete];
+  const allComplete = [...dailyComplete, ...weeklyComplete];
+  const allSkipped = [...dailySkipped, ...weeklySkipped];
+
+  const orderedCats = useMemo(
+    () => getOrderedCategories(allRoutineData, categoryWeights),
+    [allRoutineData, categoryWeights],
+  );
+
+  /** Render a mixed group (both fixed-day and frequency routines) with category sub-labels */
+  const renderMixedGroup = (
+    items: DailyRoutineStatus[],
+    statusGroup: "incomplete" | "complete" | "skipped",
+    startIndex: number,
+  ) => {
+    if (items.length === 0) return null;
+    const catGroups = groupByCategory(items, orderedCats);
+    const showCatLabels =
+      catGroups.length > 1 ||
+      (catGroups.length === 1 && catGroups[0]?.catName !== "Uncategorised");
+    let idx = startIndex;
+    const groupKey: GroupKey =
+      statusGroup === "complete"
+        ? "completed"
+        : statusGroup === "skipped"
+          ? "skipped"
+          : "upcoming";
+
+    const renderItem = (item: DailyRoutineStatus, i: number) => {
+      if (isFrequencyRoutine(item.routine)) {
+        const freqMeta = parseFrequencyMeta(item.routine.description);
+        if (!freqMeta) return null;
+        return (
+          <FrequencyGoalCard
+            key={item.routine.id.toString()}
+            routineId={item.routine.id}
+            name={item.routine.name}
+            description={item.routine.description}
+            scheduledTime={item.routine.scheduledTime}
+            reminderEnabled={item.routine.reminderEnabled}
+            reminderOffset={item.routine.reminderOffset}
+            count={freqMeta.count}
+            period={freqMeta.period}
+            index={i}
+            loggingIds={loggingIds}
+            onLog={onDone}
+            showWeeklyBadge={freqMeta.period === "week"}
+            weekStart={weekStart}
+          />
+        );
+      }
+      const classified = classifyRoutine(item, now);
+      const cardGroup: GroupKey =
+        statusGroup === "incomplete" ? classified : groupKey;
+      return (
+        <RoutineCard
+          key={item.routine.id.toString()}
+          item={item}
+          group={cardGroup}
+          index={i}
+          onDone={() => onDone(item.routine.id)}
+          onSkip={() => onSkip(item.routine.id)}
+          onUndo={() => onUndo(item.routine.id)}
+          onMarkDone={() => onMarkDone(item.routine.id)}
+          isLogging={loggingIds.has(item.routine.id.toString())}
+        />
+      );
+    };
+
+    return (
+      <div className="space-y-1">
+        {showCatLabels
+          ? catGroups.map(({ catName, catItems }) => (
+              <div key={catName}>
+                <CategorySubLabel name={catName} />
+                <div className="space-y-2.5">
+                  {catItems.map((item) => {
+                    const i = idx++;
+                    return renderItem(item, i);
+                  })}
+                </div>
+              </div>
+            ))
+          : items.map((item) => {
+              const i = idx++;
+              return renderItem(item, i);
+            })}
+      </div>
+    );
+  };
+
+  const sections: {
+    status: "incomplete" | "complete" | "skipped";
+    dailySubset: DailyRoutineStatus[];
+    weeklySubset: DailyRoutineStatus[];
+  }[] = [
+    {
+      status: "incomplete",
+      dailySubset: dailyIncomplete,
+      weeklySubset: weeklyIncomplete,
+    },
+    {
+      status: "complete",
+      dailySubset: dailyComplete,
+      weeklySubset: weeklyComplete,
+    },
+    {
+      status: "skipped",
+      dailySubset: dailySkipped,
+      weeklySubset: weeklySkipped,
+    },
+  ];
+
+  return (
+    <motion.div
+      key="completion-view"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -6 }}
+      transition={{ duration: 0.2 }}
+      className="space-y-8"
+      data-ocid="dashboard.completion_view.section"
+    >
+      {sections.map(({ status, dailySubset, weeklySubset }) => {
+        const totalCount = dailySubset.length + weeklySubset.length;
+        if (totalCount === 0) return null;
+        return (
+          <div key={status} className="space-y-4">
+            <CompletionStatusHeader status={status} count={totalCount} />
+            {dailySubset.length > 0 && (
+              <div className="space-y-2">
+                <FrequencyTypeHeader type="daily" />
+                {renderMixedGroup(dailySubset, status, 0)}
+              </div>
+            )}
+            {weeklySubset.length > 0 && (
+              <div className="space-y-2">
+                <FrequencyTypeHeader type="weekly" />
+                {renderMixedGroup(weeklySubset, status, dailySubset.length)}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {allIncomplete.length === 0 &&
+        allComplete.length === 0 &&
+        allSkipped.length === 0 && (
+          <p
+            className="text-sm text-muted-foreground text-center py-8"
+            data-ocid="completion_view.empty_state"
+          >
+            No tasks to display.
+          </p>
+        )}
+    </motion.div>
+  );
+}
+
+// ─── Category Wise View ────────────────────────────────────────────────────────
+
+function CategoryWiseView({
+  allRoutineData,
+  loggingIds,
+  onDone,
+  onSkip,
+  onUndo,
+  onMarkDone,
+  weekStart,
+  now,
+  freqLogs,
+}: ViewProps) {
+  const categoryWeights = useMemo(() => loadCategoryWeights(), []);
+  const orderedCats = useMemo(
+    () => getOrderedCategories(allRoutineData, categoryWeights),
+    [allRoutineData, categoryWeights],
+  );
+
+  // Group all items by category
+  const catMap = useMemo(() => {
+    const map = new Map<string, DailyRoutineStatus[]>();
+    for (const item of allRoutineData) {
+      const cat =
+        parseCategoryMeta(item.routine.description) ?? "Uncategorised";
+      if (!map.has(cat)) map.set(cat, []);
+      map.get(cat)!.push(item);
+    }
+    return map;
+  }, [allRoutineData]);
+
+  const getWeightForCat = (catName: string) => {
+    const cw = categoryWeights.find((c) => c.name === catName);
+    return cw ? cw.weight : null;
+  };
+
+  return (
+    <motion.div
+      key="category-view"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -6 }}
+      transition={{ duration: 0.2 }}
+      className="space-y-8"
+      data-ocid="dashboard.category_view.section"
+    >
+      {orderedCats.map((catName) => {
+        const catItems = catMap.get(catName) ?? [];
+        if (catItems.length === 0) return null;
+        const weight = getWeightForCat(catName);
+
+        // Split by Daily/Weekly using isDailyRoutine (for section headers)
+        const catDailyItems = catItems.filter((item) =>
+          isDailyRoutine(item.routine),
+        );
+        const catWeeklyItems = catItems.filter(
+          (item) => !isDailyRoutine(item.routine),
+        );
+
+        const getCompletionStatus = (item: DailyRoutineStatus) => {
+          if (isFrequencyRoutine(item.routine)) {
+            const info = freqLogs.get(item.routine.id.toString());
+            if (item.status === "skipped") return "skipped";
+            if (!info || info.completions < info.count) return "incomplete";
+            return "complete";
+          }
+          return getFixedDayStatus(item);
+        };
+
+        const dailyIncomplete = catDailyItems.filter(
+          (item) => getCompletionStatus(item) === "incomplete",
+        );
+        const dailyComplete = catDailyItems.filter(
+          (item) => getCompletionStatus(item) === "complete",
+        );
+        const dailySkipped = catDailyItems.filter(
+          (item) => getCompletionStatus(item) === "skipped",
+        );
+
+        const weeklyIncomplete = catWeeklyItems.filter(
+          (item) => getCompletionStatus(item) === "incomplete",
+        );
+        const weeklyComplete = catWeeklyItems.filter(
+          (item) => getCompletionStatus(item) === "complete",
+        );
+        const weeklySkipped = catWeeklyItems.filter(
+          (item) => getCompletionStatus(item) === "skipped",
+        );
+
+        const statuses: {
+          status: "incomplete" | "complete" | "skipped";
+          daily: DailyRoutineStatus[];
+          weekly: DailyRoutineStatus[];
+        }[] = [
+          {
+            status: "incomplete",
+            daily: dailyIncomplete,
+            weekly: weeklyIncomplete,
+          },
+          { status: "complete", daily: dailyComplete, weekly: weeklyComplete },
+          { status: "skipped", daily: dailySkipped, weekly: weeklySkipped },
+        ];
+
+        return (
+          <div
+            key={catName}
+            className="rounded-2xl border border-border/60 overflow-hidden"
+            style={{ background: "oklch(0.155 0.01 255)" }}
+          >
+            {/* Category header */}
+            <div
+              className="flex items-center justify-between px-4 py-3 border-b border-border/40"
+              style={{ background: "oklch(0.145 0.01 258)" }}
+            >
+              <div className="flex items-center gap-2">
+                <Tag
+                  className="w-3.5 h-3.5"
+                  style={{ color: "oklch(0.72 0.14 280)" }}
+                />
+                <span
+                  className="text-sm font-bold"
+                  style={{ color: "oklch(0.88 0.012 260)" }}
+                >
+                  {catName}
+                </span>
+              </div>
+              {weight !== null && (
+                <span
+                  className="text-[11px] px-2 py-0.5 rounded-full font-semibold"
+                  style={{
+                    background: "oklch(0.55 0.14 280 / 0.15)",
+                    color: "oklch(0.72 0.14 280)",
+                  }}
+                >
+                  {weight}% weight
+                </span>
+              )}
+            </div>
+
+            {/* Status sub-sections */}
+            <div className="p-4 space-y-6">
+              {statuses.map(({ status, daily, weekly }) => {
+                const total = daily.length + weekly.length;
+                if (total === 0) return null;
+                const hasBothTypes =
+                  catDailyItems.length > 0 && catWeeklyItems.length > 0;
+
+                const renderSubset = (
+                  items: DailyRoutineStatus[],
+                  startIndex: number,
+                ) => {
+                  let idx = startIndex;
+                  const groupKey: GroupKey =
+                    status === "complete"
+                      ? "completed"
+                      : status === "skipped"
+                        ? "skipped"
+                        : "upcoming";
+                  return (
+                    <div className="space-y-2">
+                      {items.map((item) => {
+                        const i = idx++;
+                        if (isFrequencyRoutine(item.routine)) {
+                          const freqMeta = parseFrequencyMeta(
+                            item.routine.description,
+                          );
+                          if (!freqMeta) return null;
+                          return (
+                            <FrequencyGoalCard
+                              key={item.routine.id.toString()}
+                              routineId={item.routine.id}
+                              name={item.routine.name}
+                              description={item.routine.description}
+                              scheduledTime={item.routine.scheduledTime}
+                              reminderEnabled={item.routine.reminderEnabled}
+                              reminderOffset={item.routine.reminderOffset}
+                              count={freqMeta.count}
+                              period={freqMeta.period}
+                              index={i}
+                              loggingIds={loggingIds}
+                              onLog={onDone}
+                              showWeeklyBadge={freqMeta.period === "week"}
+                              weekStart={weekStart}
+                            />
+                          );
+                        }
+                        const classified = classifyRoutine(item, now);
+                        const cardGroup: GroupKey =
+                          status === "incomplete" ? classified : groupKey;
+                        return (
+                          <RoutineCard
+                            key={item.routine.id.toString()}
+                            item={item}
+                            group={cardGroup}
+                            index={i}
+                            onDone={() => onDone(item.routine.id)}
+                            onSkip={() => onSkip(item.routine.id)}
+                            onUndo={() => onUndo(item.routine.id)}
+                            onMarkDone={() => onMarkDone(item.routine.id)}
+                            isLogging={loggingIds.has(
+                              item.routine.id.toString(),
+                            )}
+                          />
+                        );
+                      })}
+                    </div>
+                  );
+                };
+
+                return (
+                  <div key={status} className="space-y-3">
+                    <CompletionStatusHeader status={status} count={total} />
+                    {daily.length > 0 && (
+                      <div>
+                        {hasBothTypes && <FrequencyTypeHeader type="daily" />}
+                        {renderSubset(daily, 0)}
+                      </div>
+                    )}
+                    {weekly.length > 0 && (
+                      <div>
+                        {hasBothTypes && <FrequencyTypeHeader type="weekly" />}
+                        {renderSubset(weekly, daily.length)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      {orderedCats.length === 0 && (
+        <p
+          className="text-sm text-muted-foreground text-center py-8"
+          data-ocid="category_view.empty_state"
+        >
+          No tasks to display.
+        </p>
+      )}
+    </motion.div>
+  );
+}
+
+// ─── Frequency Wise View ───────────────────────────────────────────────────────
+
+function FrequencyWiseView({
+  allRoutineData,
+  loggingIds,
+  onDone,
+  onSkip,
+  onUndo,
+  onMarkDone,
+  weekStart,
+  now,
+  freqLogs,
+}: ViewProps) {
+  const categoryWeights = useMemo(() => loadCategoryWeights(), []);
+  const orderedCats = useMemo(
+    () => getOrderedCategories(allRoutineData, categoryWeights),
+    [allRoutineData, categoryWeights],
+  );
+
+  // Classify by new Daily/Weekly rule (isDailyRoutine)
+  const freqViewDailyItems = allRoutineData.filter((item) =>
+    isDailyRoutine(item.routine),
+  );
+  const freqViewWeeklyItems = allRoutineData.filter(
+    (item) => !isDailyRoutine(item.routine),
+  );
+
+  const getFreqViewStatus = (
+    item: DailyRoutineStatus,
+  ): "incomplete" | "complete" | "skipped" => {
+    if (isFrequencyRoutine(item.routine)) {
+      const info = freqLogs.get(item.routine.id.toString());
+      if (item.status === "skipped") return "skipped";
+      if (!info || info.completions < info.count) return "incomplete";
+      return "complete";
+    }
+    return getFixedDayStatus(item);
+  };
+
+  const dailyIncomplete = freqViewDailyItems.filter(
+    (item) => getFreqViewStatus(item) === "incomplete",
+  );
+  const dailyComplete = freqViewDailyItems.filter(
+    (item) => getFreqViewStatus(item) === "complete",
+  );
+  const dailySkipped = freqViewDailyItems.filter(
+    (item) => getFreqViewStatus(item) === "skipped",
+  );
+
+  const weeklyIncomplete = freqViewWeeklyItems.filter(
+    (item) => getFreqViewStatus(item) === "incomplete",
+  );
+  const weeklyComplete = freqViewWeeklyItems.filter(
+    (item) => getFreqViewStatus(item) === "complete",
+  );
+  const weeklySkipped = freqViewWeeklyItems.filter(
+    (item) => getFreqViewStatus(item) === "skipped",
+  );
+
+  /** Render a mixed group with category sub-labels, using correct card per isFrequencyRoutine */
+  const renderMixedGroup = (
+    items: DailyRoutineStatus[],
+    statusGroup: "incomplete" | "complete" | "skipped",
+    startIndex: number,
+  ) => {
+    if (items.length === 0) return null;
+    const groupKey: GroupKey =
+      statusGroup === "complete"
+        ? "completed"
+        : statusGroup === "skipped"
+          ? "skipped"
+          : "upcoming";
+    const catGroups = groupByCategory(items, orderedCats);
+    const showCatLabels =
+      catGroups.length > 1 ||
+      (catGroups.length === 1 && catGroups[0]?.catName !== "Uncategorised");
+    let idx = startIndex;
+
+    const renderItem = (item: DailyRoutineStatus, i: number) => {
+      if (isFrequencyRoutine(item.routine)) {
+        const freqMeta = parseFrequencyMeta(item.routine.description);
+        if (!freqMeta) return null;
+        return (
+          <FrequencyGoalCard
+            key={item.routine.id.toString()}
+            routineId={item.routine.id}
+            name={item.routine.name}
+            description={item.routine.description}
+            scheduledTime={item.routine.scheduledTime}
+            reminderEnabled={item.routine.reminderEnabled}
+            reminderOffset={item.routine.reminderOffset}
+            count={freqMeta.count}
+            period={freqMeta.period}
+            index={i}
+            loggingIds={loggingIds}
+            onLog={onDone}
+            showWeeklyBadge={freqMeta.period === "week"}
+            weekStart={weekStart}
+          />
+        );
+      }
+      const classified = classifyRoutine(item, now);
+      const cardGroup: GroupKey =
+        statusGroup === "incomplete" ? classified : groupKey;
+      return (
+        <RoutineCard
+          key={item.routine.id.toString()}
+          item={item}
+          group={cardGroup}
+          index={i}
+          onDone={() => onDone(item.routine.id)}
+          onSkip={() => onSkip(item.routine.id)}
+          onUndo={() => onUndo(item.routine.id)}
+          onMarkDone={() => onMarkDone(item.routine.id)}
+          isLogging={loggingIds.has(item.routine.id.toString())}
+        />
+      );
+    };
+
+    return (
+      <div className="space-y-1">
+        {showCatLabels
+          ? catGroups.map(({ catName, catItems }) => (
+              <div key={catName}>
+                <CategorySubLabel name={catName} />
+                <div className="space-y-2.5">
+                  {catItems.map((item) => {
+                    const i = idx++;
+                    return renderItem(item, i);
+                  })}
+                </div>
+              </div>
+            ))
+          : items.map((item) => {
+              const i = idx++;
+              return renderItem(item, i);
+            })}
+      </div>
+    );
+  };
+
+  return (
+    <motion.div
+      key="frequency-view"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -6 }}
+      transition={{ duration: 0.2 }}
+      className="space-y-8"
+      data-ocid="dashboard.frequency_view.section"
+    >
+      {/* DAILY TASKS — every-day routines */}
+      {freqViewDailyItems.length > 0 && (
+        <div className="space-y-5">
+          <div
+            className="flex items-center gap-2"
+            style={{ color: "oklch(0.78 0.14 72)" }}
+          >
+            <CalendarDays className="w-4 h-4" />
+            <span className="text-sm font-semibold uppercase tracking-wider">
+              Daily Tasks
+            </span>
+            <span className="text-xs opacity-60">
+              ({freqViewDailyItems.length})
+            </span>
+          </div>
+          {dailyIncomplete.length > 0 && (
+            <div className="space-y-2">
+              <CompletionStatusHeader
+                status="incomplete"
+                count={dailyIncomplete.length}
+              />
+              {renderMixedGroup(dailyIncomplete, "incomplete", 0)}
+            </div>
+          )}
+          {dailyComplete.length > 0 && (
+            <div className="space-y-2">
+              <CompletionStatusHeader
+                status="complete"
+                count={dailyComplete.length}
+              />
+              {renderMixedGroup(
+                dailyComplete,
+                "complete",
+                dailyIncomplete.length,
+              )}
+            </div>
+          )}
+          {dailySkipped.length > 0 && (
+            <div className="space-y-2">
+              <CompletionStatusHeader
+                status="skipped"
+                count={dailySkipped.length}
+              />
+              {renderMixedGroup(
+                dailySkipped,
+                "skipped",
+                dailyIncomplete.length + dailyComplete.length,
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* WEEKLY TASKS — not-every-day routines */}
+      {freqViewWeeklyItems.length > 0 && (
+        <div className="space-y-5">
+          <div
+            className="flex items-center gap-2"
+            style={{ color: "oklch(0.72 0.14 280)" }}
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span className="text-sm font-semibold uppercase tracking-wider">
+              Weekly Tasks
+            </span>
+            <span className="text-xs opacity-60">
+              ({freqViewWeeklyItems.length})
+            </span>
+          </div>
+          {weeklyIncomplete.length > 0 && (
+            <div className="space-y-2">
+              <CompletionStatusHeader
+                status="incomplete"
+                count={weeklyIncomplete.length}
+              />
+              {renderMixedGroup(weeklyIncomplete, "incomplete", 0)}
+            </div>
+          )}
+          {weeklyComplete.length > 0 && (
+            <div className="space-y-2">
+              <CompletionStatusHeader
+                status="complete"
+                count={weeklyComplete.length}
+              />
+              {renderMixedGroup(
+                weeklyComplete,
+                "complete",
+                weeklyIncomplete.length,
+              )}
+            </div>
+          )}
+          {weeklySkipped.length > 0 && (
+            <div className="space-y-2">
+              <CompletionStatusHeader
+                status="skipped"
+                count={weeklySkipped.length}
+              />
+              {renderMixedGroup(
+                weeklySkipped,
+                "skipped",
+                weeklyIncomplete.length + weeklyComplete.length,
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {freqViewDailyItems.length === 0 && freqViewWeeklyItems.length === 0 && (
+        <p
+          className="text-sm text-muted-foreground text-center py-8"
+          data-ocid="frequency_view.empty_state"
+        >
+          No tasks to display.
+        </p>
+      )}
+    </motion.div>
+  );
+}
+
 // ─── Dashboard Page ────────────────────────────────────────────────────────────
 
 export default function DashboardPage({
@@ -1739,14 +2350,53 @@ export default function DashboardPage({
   const today = getTodayString();
   const [now, setNow] = useState(new Date());
   const [loggingIds, setLoggingIds] = useState<Set<string>>(new Set());
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode());
   const { mode: weekMode } = useWeekStartPreference();
   const weekStart = getWeekStartWithMode(weekMode);
+
+  const handleViewModeChange = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+    saveViewMode(mode);
+  }, []);
 
   const { data: allRoutineData = [], isLoading } =
     useGetDailyRoutinesWithStatus(today);
 
   // Load all routines for reminder checking
   const { data: allRoutines = [] } = useGetAllRoutines();
+
+  // Fetch logs for frequency routines to determine their completion status
+  const freqRoutineIds = useMemo(
+    () =>
+      allRoutineData
+        .filter((item) => isFrequencyRoutine(item.routine))
+        .map((item) => item.routine.id),
+    [allRoutineData],
+  );
+  const { data: freqRawLogs = [] } = useGetAllRoutineLogs(freqRoutineIds);
+
+  // Build a map: routineId -> { completions, count } for frequency tasks
+  const freqLogs = useMemo(() => {
+    const map = new Map<string, { completions: number; count: number }>();
+    for (const item of allRoutineData) {
+      if (!isFrequencyRoutine(item.routine)) continue;
+      const freqMeta = parseFrequencyMeta(item.routine.description);
+      if (!freqMeta) continue;
+      const routineLogs = freqRawLogs.filter(
+        (l) => l.routineId.toString() === item.routine.id.toString(),
+      );
+      const completions = countCompletionsInPeriod(
+        routineLogs,
+        freqMeta.period,
+        freqMeta.period === "week" ? weekStart : undefined,
+      );
+      map.set(item.routine.id.toString(), {
+        completions,
+        count: freqMeta.count,
+      });
+    }
+    return map;
+  }, [allRoutineData, freqRawLogs, weekStart]);
 
   const logRoutine = useLogRoutine();
   const updateRoutineLogStatus = useUpdateRoutineLogStatus();
@@ -1951,7 +2601,8 @@ export default function DashboardPage({
       {/* Content */}
       <div className="max-w-3xl mx-auto px-4 md:px-8 py-6">
         {isLoading ? (
-          <div className="space-y-6">
+          <div className="space-y-6" data-ocid="dashboard.loading_state">
+            <Skeleton className="h-24 w-full rounded-2xl bg-card" />
             {[1, 2, 3].map((i) => (
               <div key={i} className="space-y-2">
                 <Skeleton className="h-4 w-24 bg-muted" />
@@ -1994,44 +2645,61 @@ export default function DashboardPage({
             </Button>
           </motion.div>
         ) : (
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={today}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="space-y-8"
-            >
-              {/* Fixed-day routine groups: Overdue → Due Soon → Upcoming → Completed → Skipped */}
-              {(
-                [
-                  "overdue",
-                  "due-soon",
-                  "upcoming",
-                  "completed",
-                  "skipped",
-                ] as GroupKey[]
-              ).map((key) => (
-                <GroupSection
-                  key={key}
-                  groupKey={key}
-                  items={groups[key]}
+          <>
+            {/* View Mode Selector — prominently placed before task content */}
+            <div className="mb-6">
+              <ViewModeSelector
+                value={viewMode}
+                onChange={handleViewModeChange}
+              />
+            </div>
+
+            {/* Task content — switches based on view mode */}
+            <AnimatePresence mode="wait">
+              {viewMode === "completion" && (
+                <CompletionWiseView
+                  key="completion"
+                  allRoutineData={allRoutineData}
+                  loggingIds={loggingIds}
                   onDone={(id) => handleLog(id, "completed")}
                   onSkip={(id) => handleLog(id, "skipped")}
                   onUndo={handleUndo}
                   onMarkDone={handleMarkDone}
-                  loggingIds={loggingIds}
+                  weekStart={weekStart}
+                  now={now}
+                  freqLogs={freqLogs}
                 />
-              ))}
-
-              {/* Weekly / Monthly frequency goals section */}
-              <FrequencyGoalsSection
-                dailyRoutines={allRoutineData}
-                loggingIds={loggingIds}
-                onLog={(id) => handleLog(id, "completed")}
-                weekStart={weekStart}
-              />
-            </motion.div>
-          </AnimatePresence>
+              )}
+              {viewMode === "category" && (
+                <CategoryWiseView
+                  key="category"
+                  allRoutineData={allRoutineData}
+                  loggingIds={loggingIds}
+                  onDone={(id) => handleLog(id, "completed")}
+                  onSkip={(id) => handleLog(id, "skipped")}
+                  onUndo={handleUndo}
+                  onMarkDone={handleMarkDone}
+                  weekStart={weekStart}
+                  now={now}
+                  freqLogs={freqLogs}
+                />
+              )}
+              {viewMode === "frequency" && (
+                <FrequencyWiseView
+                  key="frequency"
+                  allRoutineData={allRoutineData}
+                  loggingIds={loggingIds}
+                  onDone={(id) => handleLog(id, "completed")}
+                  onSkip={(id) => handleLog(id, "skipped")}
+                  onUndo={handleUndo}
+                  onMarkDone={handleMarkDone}
+                  weekStart={weekStart}
+                  now={now}
+                  freqLogs={freqLogs}
+                />
+              )}
+            </AnimatePresence>
+          </>
         )}
       </div>
     </div>
