@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -5,6 +6,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -13,9 +15,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { CalendarRange, Settings } from "lucide-react";
+import { BarChart2, CalendarRange, Minus, Plus, Settings } from "lucide-react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
+import { useNWeeksPreference } from "../hooks/useNWeeksPreference";
 import { useWeekStartPreference } from "../hooks/useWeekStartPreference";
 import {
   WEEK_MODE_LABELS,
@@ -60,6 +63,7 @@ const WEEK_MODE_ORDER: WeekStartMode[] = [
 
 export default function SettingsPage() {
   const { mode, setMode } = useWeekStartPreference();
+  const { nWeeks, setNWeeks, MIN_N, MAX_N } = useNWeeksPreference();
 
   const handleChange = (value: string) => {
     setMode(value as WeekStartMode);
@@ -197,6 +201,104 @@ export default function SettingsPage() {
               <p className="text-xs text-muted-foreground leading-relaxed">
                 This affects how weekly task completion counts are calculated on
                 the dashboard. Changes take effect immediately.
+              </p>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* Success Rate History Card */}
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25, delay: 0.1 }}
+        >
+          <Card
+            className="border-border/60 shadow-card-lift"
+            style={{ background: "oklch(0.165 0.012 255)" }}
+          >
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                  style={{ background: "oklch(0.72 0.14 280 / 0.12)" }}
+                >
+                  <BarChart2
+                    className="w-4 h-4"
+                    style={{ color: "oklch(0.72 0.14 280)" }}
+                  />
+                </div>
+                <div>
+                  <CardTitle className="text-base font-semibold text-foreground">
+                    Success Rate History
+                  </CardTitle>
+                  <CardDescription className="text-xs mt-0.5">
+                    Number of past weeks to show in the success rate chart
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label className="text-sm font-medium text-foreground">
+                  Past weeks to show
+                </Label>
+                <div className="flex items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="w-8 h-8 shrink-0 border-border"
+                    disabled={nWeeks <= MIN_N}
+                    onClick={() => {
+                      setNWeeks(nWeeks - 1);
+                      toast.success(`Now showing ${nWeeks - 1} weeks`);
+                    }}
+                    data-ocid="settings.n_weeks.decrease_button"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      min={MIN_N}
+                      max={MAX_N}
+                      value={nWeeks}
+                      onChange={(e) => {
+                        const val = Number.parseInt(e.target.value, 10);
+                        if (!Number.isNaN(val)) {
+                          setNWeeks(val);
+                        }
+                      }}
+                      onBlur={() => toast.success(`Showing ${nWeeks} weeks`)}
+                      className="w-16 text-center bg-background border-input font-semibold text-lg"
+                      data-ocid="settings.n_weeks.input"
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      {nWeeks === 1 ? "week" : "weeks"}
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="w-8 h-8 shrink-0 border-border"
+                    disabled={nWeeks >= MAX_N}
+                    onClick={() => {
+                      setNWeeks(nWeeks + 1);
+                      toast.success(`Now showing ${nWeeks + 1} weeks`);
+                    }}
+                    data-ocid="settings.n_weeks.increase_button"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                The success rate charts on the dashboard will show data for the
+                past {nWeeks} {nWeeks === 1 ? "week" : "weeks"}. Range: {MIN_N}–
+                {MAX_N} weeks.
               </p>
             </CardContent>
           </Card>

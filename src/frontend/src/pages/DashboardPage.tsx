@@ -8,7 +8,10 @@ import {
   Bell,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock,
   RefreshCw,
   RotateCcw,
@@ -18,9 +21,10 @@ import {
   Zap,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import type { DailyRoutineStatus, Routine } from "../backend.d";
+import { useNWeeksPreference } from "../hooks/useNWeeksPreference";
 import {
   useGetAllRoutineLogs,
   useGetAllRoutines,
@@ -31,8 +35,15 @@ import {
 } from "../hooks/useQueries";
 import { useReminders } from "../hooks/useReminders";
 import { useWeekStartPreference } from "../hooks/useWeekStartPreference";
+import type { WeekStartMode } from "../utils/routineHelpers";
 import {
   DAY_LABELS,
+  computeCategoryPastNWeeksRates,
+  computeCategoryWeeklyRates,
+  computeDailyWeightedRatesForWeek,
+  computePastNWeeksWeightedRates,
+  computeTaskWeeklyRates,
+  computeWeightedRate,
   countCompletionsInPeriod,
   countPlannedForDate,
   formatDateFull,
@@ -45,8 +56,10 @@ import {
   getWeekStartWithMode,
   groupRoutines,
   isFrequencyRoutine,
+  loadCategoryWeights,
   parseCategoryMeta,
   parseFrequencyMeta,
+  toFlatLogs,
 } from "../utils/routineHelpers";
 
 interface DashboardPageProps {
@@ -1033,68 +1046,255 @@ function RatePill({
   );
 }
 
-function SuccessRatesPanel({
+// ─── Shared Bar Chart ──────────────────────────────────────────────────────────
+
+function WeekBarChart({
+  bars,
+  title,
+}: {
+  bars: Array<{
+    label: string;
+    subLabel?: string;
+    rate: number | null;
+    isHighlighted?: boolean;
+    isEmpty?: boolean;
+  }>;
+  title: string;
+}) {
+  const BAR_AREA_H = 80;
+  return (
+    <div
+      className="rounded-xl border border-border/50 p-3"
+      style={{ background: "oklch(0.13 0.008 260 / 0.6)" }}
+    >
+      <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+        {title}
+      </p>
+      <div
+        className="flex items-end gap-1"
+        style={{ height: `${BAR_AREA_H + 36}px` }}
+      >
+        {bars.map((bar, i) => {
+          const barColor = bar.isHighlighted
+            ? "oklch(0.78 0.14 72)"
+            : bar.rate === null
+              ? "oklch(0.28 0.015 255 / 0.4)"
+              : getRateColor(bar.rate);
+          const barHeight =
+            bar.isEmpty || bar.rate === null
+              ? 6
+              : Math.max(6, Math.round((bar.rate / 100) * BAR_AREA_H));
+
+          return (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: bar labels can repeat
+              key={i}
+              className="flex-1 flex flex-col items-center gap-0.5"
+            >
+              <div
+                className="text-center leading-none"
+                style={{
+                  height: "20px",
+                  display: "flex",
+                  alignItems: "flex-end",
+                  justifyContent: "center",
+                }}
+              >
+                {bar.isHighlighted ? (
+                  <span
+                    className="text-[9px] font-bold uppercase tracking-wider px-1 py-0.5 rounded"
+                    style={{
+                      background: "oklch(0.78 0.14 72 / 0.2)",
+                      color: "oklch(0.78 0.14 72)",
+                    }}
+                  >
+                    Today
+                  </span>
+                ) : bar.isEmpty ? (
+                  <span className="text-[9px] text-muted-foreground/40">—</span>
+                ) : bar.rate !== null ? (
+                  <span
+                    className="text-[10px] font-semibold"
+                    style={{ color: getRateColor(bar.rate) }}
+                  >
+                    {bar.rate}%
+                  </span>
+                ) : (
+                  <span className="text-[9px] text-muted-foreground/40">—</span>
+                )}
+              </div>
+              <div
+                className="w-full flex items-end"
+                style={{ height: `${BAR_AREA_H}px` }}
+              >
+                <div
+                  className="w-full rounded-t-sm transition-all duration-500"
+                  style={{
+                    height: `${barHeight}px`,
+                    background: barColor,
+                    opacity: bar.isEmpty ? 0.25 : 1,
+                    boxShadow: bar.isHighlighted
+                      ? "0 0 10px oklch(0.78 0.14 72 / 0.35)"
+                      : "none",
+                  }}
+                />
+              </div>
+              <span
+                className="text-[10px] font-medium mt-0.5 truncate w-full text-center"
+                style={{
+                  color: bar.isHighlighted
+                    ? "oklch(0.78 0.14 72)"
+                    : "oklch(0.55 0.012 255)",
+                }}
+              >
+                {bar.label}
+              </span>
+              {bar.subLabel && (
+                <span
+                  className="text-[9px]"
+                  style={{ color: "oklch(0.42 0.012 255)" }}
+                >
+                  {bar.subLabel}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Weighted Success Panel ────────────────────────────────────────────────────
+
+type DrillLevel = "overall" | "categories" | "tasks";
+
+function WeightedSuccessPanel({
   allRoutines,
   weekStart,
   today,
+  weekMode,
 }: {
   allRoutines: Routine[];
   weekStart: string;
   today: string;
+  weekMode: WeekStartMode;
 }) {
+  const [level, setLevel] = useState<DrillLevel>("overall");
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [categoryWeights] = useState(() => loadCategoryWeights());
+  const { nWeeks } = useNWeeksPreference();
+
   // Filter to fixed-day routines only
-  const fixedRoutines = allRoutines.filter((r) => !isFrequencyRoutine(r));
+  const fixedRoutines = useMemo(
+    () => allRoutines.filter((r) => !isFrequencyRoutine(r)),
+    [allRoutines],
+  );
 
   // Fetch all logs for fixed-day routines
-  const { data: logs = [], isLoading: logsLoading } = useGetAllRoutineLogs(
+  const { data: rawLogs = [], isLoading: logsLoading } = useGetAllRoutineLogs(
     fixedRoutines.map((r) => r.id),
   );
 
-  // Build week dates (7 days)
-  const weekDates = getWeekDates(weekStart);
+  const logs = useMemo(() => toFlatLogs(rawLogs), [rawLogs]);
+  const weekDates = useMemo(() => getWeekDates(weekStart), [weekStart]);
 
-  // Per-day stats
-  const dayStats = weekDates.map((dateStr) => {
-    const isFuture = dateStr > today;
-    const isToday = dateStr === today;
-    const planned = countPlannedForDate(fixedRoutines, dateStr);
-    const completed = isFuture
-      ? 0
-      : logs.filter((l) => l.date === dateStr && l.status === "completed")
-          .length;
-    const rate =
-      isFuture || planned === 0
-        ? null
-        : Math.round((completed / planned) * 100);
-    const dow = getDayOfWeekForDate(dateStr);
-    const dayLabel = DAY_LABELS[dow] ?? "?";
-    const dateNum = Number.parseInt(dateStr.split("-")[2]!, 10);
-    return {
-      dateStr,
-      isFuture,
-      isToday,
-      planned,
-      completed,
-      rate,
-      dayLabel,
-      dateNum,
-    };
-  });
+  // Overall weighted rates for today and current week
+  const weeklyRate = useMemo(() => {
+    if (categoryWeights.length === 0) return null;
+    return computeWeightedRate(
+      fixedRoutines,
+      logs,
+      categoryWeights,
+      "week",
+      weekDates,
+      today,
+    );
+  }, [fixedRoutines, logs, categoryWeights, weekDates, today]);
 
-  // Weekly totals: sum up to and including today
-  const pastDays = dayStats.filter((d) => !d.isFuture);
-  const Y = pastDays.reduce((sum, d) => sum + d.planned, 0);
-  const X = logs.filter(
-    (l) => l.date >= weekStart && l.date <= today && l.status === "completed",
-  ).length;
-  const weeklyRate = Y > 0 ? Math.round((X / Y) * 100) : null;
+  const dailyRate = useMemo(() => {
+    if (categoryWeights.length === 0) return null;
+    return computeWeightedRate(
+      fixedRoutines,
+      logs,
+      categoryWeights,
+      "day",
+      today,
+      today,
+    );
+  }, [fixedRoutines, logs, categoryWeights, today]);
 
-  // Today's rate
-  const todayStats = dayStats.find((d) => d.isToday);
-  const dailyRate = todayStats?.rate ?? null;
+  // Daily weighted rates for the current week bar chart
+  const dailyBarData = useMemo(() => {
+    if (categoryWeights.length === 0) return null;
+    return computeDailyWeightedRatesForWeek(
+      fixedRoutines,
+      logs,
+      categoryWeights,
+      weekDates,
+      today,
+    );
+  }, [fixedRoutines, logs, categoryWeights, weekDates, today]);
 
-  // Chart max height px
-  const BAR_AREA_H = 120;
+  // Past N weeks overall rates
+  const pastNWeeksData = useMemo(() => {
+    if (categoryWeights.length === 0) return null;
+    return computePastNWeeksWeightedRates(
+      fixedRoutines,
+      logs,
+      categoryWeights,
+      weekMode,
+      nWeeks,
+    );
+  }, [fixedRoutines, logs, categoryWeights, weekMode, nWeeks]);
+
+  // Category weekly rates
+  const categoryRates = useMemo(() => {
+    if (categoryWeights.length === 0) return [];
+    return computeCategoryWeeklyRates(
+      fixedRoutines,
+      logs,
+      categoryWeights,
+      weekDates,
+      today,
+    );
+  }, [fixedRoutines, logs, categoryWeights, weekDates, today]);
+
+  // Past N weeks per-category rates
+  const categoryPastNWeeks = useMemo(() => {
+    if (!selectedCategory || categoryWeights.length === 0) return null;
+    return computeCategoryPastNWeeksRates(
+      fixedRoutines,
+      logs,
+      selectedCategory,
+      weekMode,
+      nWeeks,
+    );
+  }, [
+    fixedRoutines,
+    logs,
+    selectedCategory,
+    categoryWeights,
+    weekMode,
+    nWeeks,
+  ]);
+
+  // Task rates for selected category
+  const taskRates = useMemo(() => {
+    if (!selectedCategory) return [];
+    return computeTaskWeeklyRates(
+      fixedRoutines,
+      logs,
+      selectedCategory,
+      weekDates,
+      today,
+    );
+  }, [fixedRoutines, logs, selectedCategory, weekDates, today]);
+
+  const hasWeights = categoryWeights.length > 0;
+  const hasAnyUncategorised = fixedRoutines.some(
+    (r) => !parseCategoryMeta(r.description),
+  );
 
   if (logsLoading && fixedRoutines.length > 0) {
     return (
@@ -1130,147 +1330,401 @@ function SuccessRatesPanel({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
-      className="rounded-2xl border border-border bg-card p-4 shadow-card-lift space-y-4"
+      className="rounded-2xl border border-border bg-card shadow-card-lift overflow-hidden"
       data-ocid="success_rates.section"
     >
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <BarChart2
-          className="w-4 h-4"
-          style={{ color: "oklch(0.78 0.14 72)" }}
-        />
-        <span className="text-sm font-semibold text-foreground uppercase tracking-wider">
-          Success Rates
-        </span>
-      </div>
-
-      {/* Stat pills */}
-      <div className="flex gap-3">
-        <RatePill
-          label="Weekly Routine Success"
-          rate={weeklyRate}
-          ocid="success_rates.weekly_rate.card"
-        />
-        <RatePill
-          label="Daily Success (Today)"
-          rate={dailyRate}
-          ocid="success_rates.daily_rate.card"
-        />
-      </div>
-
-      {/* Bar chart */}
       <div
-        className="rounded-xl border border-border/50 p-3"
-        style={{ background: "oklch(0.13 0.008 260 / 0.6)" }}
-        data-ocid="success_rates.chart.panel"
+        className="flex items-center justify-between px-4 py-3 border-b border-border/60"
+        style={{ background: "oklch(0.155 0.01 255)" }}
       >
-        <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-          Daily Success Rate — This Week
-        </p>
-        <div
-          className="flex items-end gap-1.5"
-          style={{ height: `${BAR_AREA_H + 36}px` }}
-        >
-          {dayStats.map((day) => {
-            const barColor = day.isToday
-              ? "oklch(0.78 0.14 72)"
-              : day.rate === null
-                ? "oklch(0.28 0.015 255 / 0.5)"
-                : getRateColor(day.rate);
+        <div className="flex items-center gap-2">
+          {level !== "overall" && (
+            <button
+              type="button"
+              onClick={() => {
+                if (level === "tasks") setLevel("categories");
+                else {
+                  setLevel("overall");
+                  setSelectedCategory(null);
+                }
+              }}
+              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-foreground/10 transition-colors mr-1"
+              data-ocid="success_rates.back_button"
+            >
+              <ChevronLeft
+                className="w-4 h-4"
+                style={{ color: "oklch(0.78 0.14 72)" }}
+              />
+            </button>
+          )}
+          <BarChart2
+            className="w-4 h-4"
+            style={{ color: "oklch(0.78 0.14 72)" }}
+          />
+          <span className="text-sm font-semibold text-foreground uppercase tracking-wider">
+            {level === "overall"
+              ? "Success Rates"
+              : level === "categories"
+                ? "By Category"
+                : (selectedCategory ?? "Tasks")}
+          </span>
+          {level === "tasks" && selectedCategory && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+              style={{
+                background: "oklch(0.55 0.14 280 / 0.15)",
+                color: "oklch(0.72 0.14 280)",
+              }}
+            >
+              tasks
+            </span>
+          )}
+        </div>
 
-            const barHeight =
-              day.isFuture || day.planned === 0
-                ? 8
-                : Math.max(8, Math.round(((day.rate ?? 0) / 100) * BAR_AREA_H));
+        {/* Breadcrumb trail */}
+        <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+          <button
+            type="button"
+            className={`transition-colors ${level === "overall" ? "text-foreground font-semibold" : "hover:text-foreground"}`}
+            onClick={() => {
+              setLevel("overall");
+              setSelectedCategory(null);
+            }}
+            data-ocid="success_rates.overall.tab"
+          >
+            Overall
+          </button>
+          <ChevronRight className="w-3 h-3 opacity-40" />
+          <button
+            type="button"
+            className={`transition-colors ${level === "categories" ? "text-foreground font-semibold" : level === "tasks" ? "hover:text-foreground" : "opacity-40 cursor-default"}`}
+            onClick={() => {
+              if (level !== "overall") setLevel("categories");
+            }}
+            data-ocid="success_rates.categories.tab"
+          >
+            Categories
+          </button>
+          <ChevronRight className="w-3 h-3 opacity-40" />
+          <span
+            className={`${level === "tasks" ? "text-foreground font-semibold" : "opacity-40"}`}
+          >
+            Tasks
+          </span>
+        </div>
+      </div>
 
-            return (
-              <div
-                key={day.dateStr}
-                className="flex-1 flex flex-col items-center gap-0.5"
-              >
-                {/* "Today" label or percentage above bar */}
+      <div className="p-4 space-y-4">
+        <AnimatePresence mode="wait">
+          {/* ── Level 1: Overall ─────────────────────────────────────────── */}
+          {level === "overall" && (
+            <motion.div
+              key="overall"
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4"
+            >
+              {/* Uncategorised warning */}
+              {hasAnyUncategorised && (
                 <div
-                  className="text-center leading-none"
+                  className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs"
                   style={{
-                    height: "20px",
-                    display: "flex",
-                    alignItems: "flex-end",
-                    justifyContent: "center",
+                    background: "oklch(0.65 0.2 28 / 0.08)",
+                    border: "1px solid oklch(0.65 0.2 28 / 0.25)",
+                    color: "oklch(0.65 0.2 28)",
                   }}
                 >
-                  {day.isToday ? (
-                    <span
-                      className="text-[9px] font-bold uppercase tracking-wider px-1 py-0.5 rounded"
-                      style={{
-                        background: "oklch(0.78 0.14 72 / 0.2)",
-                        color: "oklch(0.78 0.14 72)",
-                      }}
-                    >
-                      Today
-                    </span>
-                  ) : day.isFuture ? (
-                    <span className="text-[9px] text-muted-foreground/40">
-                      —
-                    </span>
-                  ) : day.planned === 0 ? (
-                    <span className="text-[9px] text-muted-foreground/40 leading-none text-center">
-                      no
-                      <br />
-                      tasks
-                    </span>
-                  ) : (
-                    <span
-                      className="text-[10px] font-semibold"
-                      style={{ color: getRateColor(day.rate) }}
-                    >
-                      {day.rate}%
-                    </span>
-                  )}
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    Some tasks are uncategorised. Assign all tasks to categories
+                    for accurate weighted rates.
+                  </span>
                 </div>
+              )}
 
-                {/* Bar */}
+              {/* Rate pills */}
+              {!hasWeights ? (
                 <div
-                  className="w-full flex items-end"
-                  style={{ height: `${BAR_AREA_H}px` }}
+                  className="rounded-xl border border-border/50 p-4 text-center space-y-2"
+                  style={{ background: "oklch(0.155 0.01 255)" }}
+                  data-ocid="success_rates.setup_prompt.card"
                 >
-                  <div
-                    className="w-full rounded-t-md transition-all duration-500"
-                    style={{
-                      height: `${barHeight}px`,
-                      background: barColor,
-                      opacity: day.isFuture ? 0.25 : 1,
-                      border: day.isFuture
-                        ? "1px solid oklch(0.4 0.015 255 / 0.5)"
-                        : "none",
-                      borderBottom: "none",
-                      boxShadow: day.isToday
-                        ? "0 0 12px oklch(0.78 0.14 72 / 0.35)"
-                        : "none",
-                    }}
+                  <BarChart2
+                    className="w-5 h-5 mx-auto"
+                    style={{ color: "oklch(0.55 0.012 255)" }}
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    Set up category weights in{" "}
+                    <span className="font-semibold text-foreground">
+                      Routines → Manage Categories
+                    </span>{" "}
+                    to see weighted success rates.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex gap-3">
+                  <RatePill
+                    label="Weekly Success"
+                    rate={weeklyRate}
+                    ocid="success_rates.weekly_rate.card"
+                  />
+                  <RatePill
+                    label="Today's Success"
+                    rate={dailyRate}
+                    ocid="success_rates.daily_rate.card"
                   />
                 </div>
+              )}
 
-                {/* Day label */}
-                <span
-                  className="text-[10px] font-medium mt-1"
-                  style={{
-                    color: day.isToday
-                      ? "oklch(0.78 0.14 72)"
-                      : "oklch(0.55 0.012 255)",
-                  }}
+              {/* Current week bar chart */}
+              {hasWeights && dailyBarData && (
+                <WeekBarChart
+                  title="Daily Success — This Week"
+                  bars={weekDates.map((dateStr) => {
+                    const entry = dailyBarData.find(
+                      (d) => d.dateStr === dateStr,
+                    );
+                    const dow = getDayOfWeekForDate(dateStr);
+                    const dayLabel = DAY_LABELS[dow] ?? "?";
+                    const dateNum = Number.parseInt(dateStr.split("-")[2]!, 10);
+                    return {
+                      label: dayLabel,
+                      subLabel: String(dateNum),
+                      rate: entry?.rate ?? null,
+                      isHighlighted: dateStr === today,
+                      isEmpty: dateStr > today,
+                    };
+                  })}
+                />
+              )}
+
+              {/* Past N weeks bar chart */}
+              {hasWeights && pastNWeeksData && pastNWeeksData.length > 1 && (
+                <WeekBarChart
+                  title={`Past ${nWeeks} Weeks — Weighted Success`}
+                  bars={pastNWeeksData.map((w, i) => ({
+                    label: w.weekLabel,
+                    rate: w.rate,
+                    isHighlighted: i === pastNWeeksData.length - 1,
+                    isEmpty: w.rate === null,
+                  }))}
+                />
+              )}
+
+              {/* Drill down button */}
+              <button
+                type="button"
+                onClick={() => setLevel("categories")}
+                className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl border border-border/50 hover:border-foreground/20 transition-colors text-sm font-medium text-muted-foreground hover:text-foreground"
+                style={{ background: "oklch(0.155 0.01 255)" }}
+                data-ocid="success_rates.view_categories.button"
+              >
+                <span>View by Category</span>
+                <ChevronDown className="w-4 h-4" />
+              </button>
+            </motion.div>
+          )}
+
+          {/* ── Level 2: Categories ───────────────────────────────────────── */}
+          {level === "categories" && (
+            <motion.div
+              key="categories"
+              initial={{ opacity: 0, x: 10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4"
+            >
+              {!hasWeights ? (
+                <div
+                  className="rounded-xl border border-border/50 p-4 text-center space-y-2"
+                  style={{ background: "oklch(0.155 0.01 255)" }}
                 >
-                  {day.dayLabel}
-                </span>
-                <span
-                  className="text-[9px]"
-                  style={{ color: "oklch(0.42 0.012 255)" }}
-                >
-                  {day.dateNum}
-                </span>
+                  <p className="text-sm text-muted-foreground">
+                    Configure category weights in{" "}
+                    <span className="font-semibold text-foreground">
+                      Routines → Manage Categories
+                    </span>{" "}
+                    to see per-category success rates.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* Category cards */}
+                  <div
+                    className="space-y-2"
+                    data-ocid="success_rates.categories.list"
+                  >
+                    {categoryRates.map((cat, i) => {
+                      const color = getRateColor(cat.rate);
+                      return (
+                        <button
+                          key={cat.name}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCategory(cat.name);
+                            setLevel("tasks");
+                          }}
+                          className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-border/50 hover:border-foreground/20 transition-colors text-left"
+                          style={{ background: "oklch(0.155 0.01 255)" }}
+                          data-ocid={`success_rates.category.item.${i + 1}`}
+                        >
+                          {/* Category name + weight badge */}
+                          <div className="flex-1 min-w-0 space-y-1.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-semibold text-foreground truncate">
+                                {cat.name}
+                              </span>
+                              <span
+                                className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
+                                style={{
+                                  background: "oklch(0.55 0.14 280 / 0.15)",
+                                  color: "oklch(0.72 0.14 280)",
+                                }}
+                              >
+                                {cat.weight}%
+                              </span>
+                            </div>
+                            {/* Progress bar */}
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                                <div
+                                  className="h-full rounded-full transition-all duration-700"
+                                  style={{
+                                    width: `${cat.rate ?? 0}%`,
+                                    background: color,
+                                  }}
+                                />
+                              </div>
+                              <span
+                                className="text-xs font-semibold shrink-0 w-8 text-right"
+                                style={{ color }}
+                              >
+                                {cat.rate !== null ? `${cat.rate}%` : "—"}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground">
+                              {cat.completions} / {cat.planned} completions this
+                              week
+                            </p>
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                        </button>
+                      );
+                    })}
+                    {categoryRates.length === 0 && (
+                      <p
+                        className="text-sm text-muted-foreground text-center py-4"
+                        data-ocid="success_rates.categories.empty_state"
+                      >
+                        No category data for this week.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Past N weeks chart per-category totals */}
+                  {pastNWeeksData && pastNWeeksData.length > 1 && (
+                    <WeekBarChart
+                      title={`Past ${nWeeks} Weeks — Overall Weighted`}
+                      bars={pastNWeeksData.map((w, i) => ({
+                        label: w.weekLabel,
+                        rate: w.rate,
+                        isHighlighted: i === pastNWeeksData.length - 1,
+                        isEmpty: w.rate === null,
+                      }))}
+                    />
+                  )}
+                </>
+              )}
+            </motion.div>
+          )}
+
+          {/* ── Level 3: Tasks ────────────────────────────────────────────── */}
+          {level === "tasks" && selectedCategory && (
+            <motion.div
+              key="tasks"
+              initial={{ opacity: 0, x: 10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4"
+            >
+              {/* Task list */}
+              <div className="space-y-2" data-ocid="success_rates.tasks.list">
+                {taskRates.length === 0 ? (
+                  <p
+                    className="text-sm text-muted-foreground text-center py-4"
+                    data-ocid="success_rates.tasks.empty_state"
+                  >
+                    No fixed-day tasks in this category for the current week.
+                  </p>
+                ) : (
+                  taskRates.map((t, i) => {
+                    const color = getRateColor(t.rate);
+                    return (
+                      <div
+                        key={t.routine.id.toString()}
+                        className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border/50"
+                        style={{ background: "oklch(0.155 0.01 255)" }}
+                        data-ocid={`success_rates.task.item.${i + 1}`}
+                      >
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-foreground truncate">
+                              {t.routine.name}
+                            </span>
+                            <span
+                              className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
+                              style={{
+                                color,
+                                background: `${color.replace(")", " / 0.12)")}`,
+                              }}
+                            >
+                              {t.rate !== null ? `${t.rate}%` : "—"}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all duration-700"
+                                style={{
+                                  width: `${t.rate ?? 0}%`,
+                                  background: color,
+                                }}
+                              />
+                            </div>
+                            <span className="text-[11px] text-muted-foreground shrink-0">
+                              {t.completions}/{t.planned}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            {formatRepeatDays(t.routine.repeatDays)}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
-            );
-          })}
-        </div>
+
+              {/* Past N weeks for selected category */}
+              {categoryPastNWeeks && categoryPastNWeeks.length > 1 && (
+                <WeekBarChart
+                  title={`Past ${nWeeks} Weeks — ${selectedCategory}`}
+                  bars={categoryPastNWeeks.map((w, i) => ({
+                    label: w.weekLabel,
+                    rate: w.rate,
+                    isHighlighted: i === categoryPastNWeeks.length - 1,
+                    isEmpty: w.rate === null,
+                  }))}
+                />
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </motion.div>
   );
@@ -1485,10 +1939,11 @@ export default function DashboardPage({
       {/* Success Rates Panel — shown when content exists */}
       {hasAnyContent && (
         <div className="max-w-3xl mx-auto px-4 md:px-8 pt-6">
-          <SuccessRatesPanel
+          <WeightedSuccessPanel
             allRoutines={allRoutines}
             weekStart={weekStart}
             today={today}
+            weekMode={weekMode}
           />
         </div>
       )}

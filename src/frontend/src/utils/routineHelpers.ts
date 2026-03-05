@@ -373,6 +373,458 @@ export function countPlannedForDate(
   ).length;
 }
 
+// ─── Category Weight Storage ───────────────────────────────────────────────────
+
+export interface CategoryWeight {
+  name: string;
+  weight: number; // 0–100
+}
+
+const CATEGORY_WEIGHTS_KEY = "drm_category_weights";
+const CATEGORIES_KEY = "drm_categories";
+
+/**
+ * Load category weights from localStorage.
+ * Migrates from a plain string[] (drm_categories) if needed,
+ * assigning equal weights that sum to 100.
+ */
+export function loadCategoryWeights(): CategoryWeight[] {
+  try {
+    const raw = localStorage.getItem(CATEGORY_WEIGHTS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (
+        Array.isArray(parsed) &&
+        parsed.every(
+          (x): x is CategoryWeight =>
+            typeof x === "object" &&
+            x !== null &&
+            typeof (x as Record<string, unknown>).name === "string" &&
+            typeof (x as Record<string, unknown>).weight === "number",
+        )
+      ) {
+        return parsed;
+      }
+    }
+  } catch {
+    // fall through to migration
+  }
+
+  // Migration from plain string[] in drm_categories
+  try {
+    const catRaw = localStorage.getItem(CATEGORIES_KEY);
+    if (catRaw) {
+      const cats = JSON.parse(catRaw) as unknown;
+      if (Array.isArray(cats) && cats.length > 0) {
+        const names = (cats as unknown[]).filter(
+          (x): x is string => typeof x === "string",
+        );
+        if (names.length > 0) {
+          return distributeEqualWeights(names);
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return [];
+}
+
+export function saveCategoryWeights(cats: CategoryWeight[]): void {
+  localStorage.setItem(CATEGORY_WEIGHTS_KEY, JSON.stringify(cats));
+}
+
+/** Auto-distribute equal weights across n categories, with remainder on last */
+export function distributeEqualWeights(names: string[]): CategoryWeight[] {
+  if (names.length === 0) return [];
+  const base = Math.floor(100 / names.length);
+  const remainder = 100 - base * names.length;
+  return names.map((name, i) => ({
+    name,
+    weight: i === names.length - 1 ? base + remainder : base,
+  }));
+}
+
+// ─── Weighted Success Rate Calculations ───────────────────────────────────────
+
+/**
+ * Returns all fixed-day routines in a specific category that are planned for a
+ * given date (dateStr: YYYY-MM-DD).
+ */
+export function getCategoryTasksForDate(
+  routines: Routine[],
+  categoryName: string,
+  dateStr: string,
+): Routine[] {
+  const dow = getDayOfWeekForDate(dateStr);
+  return routines.filter((r) => {
+    if (isFrequencyRoutine(r)) return false;
+    const cat = parseCategoryMeta(r.description) ?? "Uncategorised";
+    if (cat !== categoryName) return false;
+    return r.repeatDays.map(Number).includes(dow);
+  });
+}
+
+/**
+ * Returns all fixed-day routines in a specific category that are planned for
+ * any day in the given week.
+ */
+export function getCategoryTasksForWeek(
+  routines: Routine[],
+  categoryName: string,
+  weekDates: string[],
+): Array<{ routine: Routine; dateStr: string }> {
+  const result: Array<{ routine: Routine; dateStr: string }> = [];
+  for (const dateStr of weekDates) {
+    const dayRoutines = getCategoryTasksForDate(
+      routines,
+      categoryName,
+      dateStr,
+    );
+    for (const r of dayRoutines) {
+      result.push({ routine: r, dateStr });
+    }
+  }
+  return result;
+}
+
+export interface RateResult {
+  completions: number;
+  planned: number;
+  rate: number | null;
+}
+
+/**
+ * Compute the success rate for a specific category.
+ * scope='day': only looks at dateOrDates as a single date string
+ * scope='week': looks at dateOrDates as an array of week date strings (up to today)
+ */
+export function computeCategoryRate(
+  routines: Routine[],
+  logs: Array<{ date: string; status: string; routineId?: string }>,
+  categoryName: string,
+  scope: "day" | "week",
+  dateOrDates: string | string[],
+  today: string,
+): RateResult {
+  const dates =
+    scope === "day"
+      ? [dateOrDates as string]
+      : (dateOrDates as string[]).filter((d) => d <= today);
+
+  let planned = 0;
+  const completedSet = new Set<string>(); // "routineId:date"
+
+  for (const dateStr of dates) {
+    const dayRoutines = getCategoryTasksForDate(
+      routines,
+      categoryName,
+      dateStr,
+    );
+    planned += dayRoutines.length;
+    for (const r of dayRoutines) {
+      const key = `${r.id.toString()}:${dateStr}`;
+      completedSet.add(`__check__${key}`);
+    }
+  }
+
+  // Count completions from logs
+  let completions = 0;
+  for (const log of logs) {
+    if (log.status !== "completed") continue;
+    if (!dates.includes(log.date)) continue;
+    // Find if this log belongs to a routine in this category
+    const routine = routines.find(
+      (r) => r.id.toString() === (log as { routineId?: string }).routineId,
+    );
+    if (!routine) continue;
+    if (isFrequencyRoutine(routine)) continue;
+    const cat = parseCategoryMeta(routine.description) ?? "Uncategorised";
+    if (cat !== categoryName) continue;
+    const dow = getDayOfWeekForDate(log.date);
+    if (!routine.repeatDays.map(Number).includes(dow)) continue;
+    completions++;
+  }
+
+  if (planned === 0) return { completions: 0, planned: 0, rate: null };
+  return {
+    completions,
+    planned,
+    rate: Math.round((completions / planned) * 100),
+  };
+}
+
+/**
+ * Flat log format that includes a routineId field for matching.
+ */
+export interface FlatLog {
+  date: string;
+  status: string;
+  routineId: string;
+}
+
+/**
+ * Convert RoutineLog[] (from backend, with bigint routineId) to FlatLog[].
+ */
+export function toFlatLogs(
+  logs: Array<{ date: string; status: string; routineId: bigint }>,
+): FlatLog[] {
+  return logs.map((l) => ({
+    date: l.date,
+    status: l.status,
+    routineId: l.routineId.toString(),
+  }));
+}
+
+/**
+ * Compute weighted average success rate for all categories.
+ * Categories with no planned tasks in the period are excluded from the average.
+ * Returns null if no categories have any planned tasks.
+ */
+export function computeWeightedRate(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryWeights: CategoryWeight[],
+  scope: "day" | "week",
+  dateOrDates: string | string[],
+  today: string,
+): number | null {
+  if (categoryWeights.length === 0) return null;
+
+  let weightedSum = 0;
+  let totalWeight = 0;
+
+  for (const cw of categoryWeights) {
+    const result = computeCategoryRate(
+      routines,
+      logs,
+      cw.name,
+      scope,
+      dateOrDates,
+      today,
+    );
+    if (result.planned === 0) continue;
+    weightedSum += cw.weight * (result.rate ?? 0);
+    totalWeight += cw.weight;
+  }
+
+  if (totalWeight === 0) return null;
+  return Math.round(weightedSum / totalWeight);
+}
+
+/**
+ * Compute daily weighted rates for each day in the current week.
+ */
+export function computeDailyWeightedRatesForWeek(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryWeights: CategoryWeight[],
+  weekDates: string[],
+  today: string,
+): Array<{ dateStr: string; rate: number | null }> {
+  return weekDates.map((dateStr) => {
+    if (dateStr > today) return { dateStr, rate: null };
+    const rate = computeWeightedRate(
+      routines,
+      logs,
+      categoryWeights,
+      "day",
+      dateStr,
+      today,
+    );
+    return { dateStr, rate };
+  });
+}
+
+/**
+ * Compute per-category rates for the current week.
+ */
+export function computeCategoryWeeklyRates(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryWeights: CategoryWeight[],
+  weekDates: string[],
+  today: string,
+): Array<{
+  name: string;
+  weight: number;
+  completions: number;
+  planned: number;
+  rate: number | null;
+}> {
+  const pastDates = weekDates.filter((d) => d <= today);
+  return categoryWeights.map((cw) => {
+    const result = computeCategoryRate(
+      routines,
+      logs,
+      cw.name,
+      "week",
+      pastDates,
+      today,
+    );
+    return {
+      name: cw.name,
+      weight: cw.weight,
+      completions: result.completions,
+      planned: result.planned,
+      rate: result.rate,
+    };
+  });
+}
+
+/**
+ * Compute per-task rates for a category for the current week.
+ */
+export function computeTaskWeeklyRates(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryName: string,
+  weekDates: string[],
+  today: string,
+): Array<{
+  routine: Routine;
+  completions: number;
+  planned: number;
+  rate: number | null;
+}> {
+  const pastDates = weekDates.filter((d) => d <= today);
+  const categoryRoutines = routines.filter((r) => {
+    if (isFrequencyRoutine(r)) return false;
+    const cat = parseCategoryMeta(r.description) ?? "Uncategorised";
+    return cat === categoryName;
+  });
+
+  return categoryRoutines.map((routine) => {
+    let planned = 0;
+    let completions = 0;
+    for (const dateStr of pastDates) {
+      const dow = getDayOfWeekForDate(dateStr);
+      if (!routine.repeatDays.map(Number).includes(dow)) continue;
+      planned++;
+      const completed = logs.some(
+        (l) =>
+          l.routineId === routine.id.toString() &&
+          l.date === dateStr &&
+          l.status === "completed",
+      );
+      if (completed) completions++;
+    }
+    const rate =
+      planned === 0 ? null : Math.round((completions / planned) * 100);
+    return { routine, completions, planned, rate };
+  });
+}
+
+/**
+ * Compute the weighted success rate for each of the past N weeks.
+ */
+export function computePastNWeeksWeightedRates(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryWeights: CategoryWeight[],
+  weekMode: WeekStartMode,
+  n: number,
+): Array<{ weekLabel: string; weekStart: string; rate: number | null }> {
+  const results: Array<{
+    weekLabel: string;
+    weekStart: string;
+    rate: number | null;
+  }> = [];
+
+  const today = getTodayString();
+  const currentWeekStart = getWeekStartWithMode(weekMode);
+
+  for (let i = n - 1; i >= 0; i--) {
+    // Compute the start of the week i weeks ago
+    const [cy, cm, cd] = currentWeekStart.split("-").map(Number);
+    const startDate = new Date(cy!, (cm ?? 1) - 1, cd!);
+    startDate.setDate(startDate.getDate() - i * 7);
+    const weekStart = startDate.toISOString().split("T")[0]!;
+
+    // Get the 7 dates for this week
+    const weekDates = getWeekDates(weekStart);
+    const pastDates = weekDates.filter((d) => d <= today);
+
+    const rate =
+      pastDates.length > 0
+        ? computeWeightedRate(
+            routines,
+            logs,
+            categoryWeights,
+            "week",
+            pastDates,
+            today,
+          )
+        : null;
+
+    // Format week label as "MMM DD"
+    const [wy, wm, wd] = weekStart.split("-").map(Number);
+    const labelDate = new Date(wy!, (wm ?? 1) - 1, wd!);
+    const weekLabel = labelDate.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
+
+    results.push({ weekLabel, weekStart, rate });
+  }
+
+  return results;
+}
+
+/**
+ * Compute per-category rates for the past N weeks (for Level 2 category charts).
+ */
+export function computeCategoryPastNWeeksRates(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryName: string,
+  weekMode: WeekStartMode,
+  n: number,
+): Array<{ weekLabel: string; weekStart: string; rate: number | null }> {
+  const results: Array<{
+    weekLabel: string;
+    weekStart: string;
+    rate: number | null;
+  }> = [];
+
+  const today = getTodayString();
+  const currentWeekStart = getWeekStartWithMode(weekMode);
+
+  for (let i = n - 1; i >= 0; i--) {
+    const [cy, cm, cd] = currentWeekStart.split("-").map(Number);
+    const startDate = new Date(cy!, (cm ?? 1) - 1, cd!);
+    startDate.setDate(startDate.getDate() - i * 7);
+    const weekStart = startDate.toISOString().split("T")[0]!;
+
+    const weekDates = getWeekDates(weekStart);
+    const pastDates = weekDates.filter((d) => d <= today);
+
+    const result =
+      pastDates.length > 0
+        ? computeCategoryRate(
+            routines,
+            logs,
+            categoryName,
+            "week",
+            pastDates,
+            today,
+          )
+        : { completions: 0, planned: 0, rate: null };
+
+    const [wy, wm, wd] = weekStart.split("-").map(Number);
+    const labelDate = new Date(wy!, (wm ?? 1) - 1, wd!);
+    const weekLabel = labelDate.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
+
+    results.push({ weekLabel, weekStart, rate: result.rate });
+  }
+
+  return results;
+}
+
 /** Group daily routines into categories */
 export function groupRoutines(items: DailyRoutineStatus[], now: Date) {
   const groups: Record<RoutineGroup, DailyRoutineStatus[]> = {

@@ -66,7 +66,9 @@ import {
   useUpdateRoutine,
 } from "../hooks/useQueries";
 import {
+  type CategoryWeight,
   DAY_LABELS,
+  distributeEqualWeights,
   encodeCategoryMeta,
   encodeFrequencyMeta,
   formatFrequencyLabel,
@@ -74,8 +76,10 @@ import {
   formatTime12h,
   getCleanDescription,
   isFrequencyRoutine,
+  loadCategoryWeights,
   parseCategoryMeta,
   parseFrequencyMeta,
+  saveCategoryWeights,
   stripCategoryMeta,
   stripFrequencyMeta,
 } from "../utils/routineHelpers";
@@ -854,6 +858,44 @@ function ManageCategoriesDialog({
   const [renameValue, setRenameValue] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
+  // Category weights state — loaded fresh when dialog opens
+  const [weights, setWeights] = useState<CategoryWeight[]>(() =>
+    loadCategoryWeights(),
+  );
+
+  // Re-sync weights when categories list changes (e.g., new category added)
+  useEffect(() => {
+    if (!open) return;
+    const saved = loadCategoryWeights();
+    const merged: CategoryWeight[] = categories.map((cat) => {
+      const existing = saved.find((w) => w.name === cat);
+      return existing ?? { name: cat, weight: 0 };
+    });
+    setWeights(merged);
+  }, [open, categories]);
+
+  const totalWeight = weights.reduce((sum, w) => sum + (w.weight || 0), 0);
+  const isValidTotal = Math.round(totalWeight) === 100;
+
+  const handleWeightChange = (catName: string, rawValue: string) => {
+    const parsed = Number.parseFloat(rawValue);
+    const value = Number.isNaN(parsed) ? 0 : Math.max(0, Math.min(100, parsed));
+    setWeights((prev) =>
+      prev.map((w) => (w.name === catName ? { ...w, weight: value } : w)),
+    );
+  };
+
+  const handleAutoDistribute = () => {
+    if (categories.length === 0) return;
+    const distributed = distributeEqualWeights(categories);
+    setWeights(distributed);
+  };
+
+  const handleSaveWeights = () => {
+    saveCategoryWeights(weights);
+    toast.success("Category weights saved");
+  };
+
   const countForCategory = (cat: string) =>
     routines.filter((r) => parseCategoryMeta(r.description) === cat).length;
 
@@ -873,7 +915,7 @@ function ManageCategoriesDialog({
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
-        className="max-w-sm bg-card border-border text-foreground"
+        className="max-w-md bg-card border-border text-foreground max-h-[90vh] overflow-y-auto"
         data-ocid="categories.dialog"
       >
         <DialogHeader>
@@ -885,102 +927,205 @@ function ManageCategoriesDialog({
             Manage Categories
           </DialogTitle>
           <DialogDescription className="text-muted-foreground text-sm">
-            Rename or delete your task categories.
+            Rename, delete, or assign weights to your task categories.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2 mt-2 max-h-72 overflow-y-auto">
+        {/* Category list with weight inputs */}
+        <div className="space-y-2 mt-2">
           {categories.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-6">
               No categories yet. Add one when creating a routine.
             </p>
           ) : (
-            categories.map((cat) => {
-              const count = countForCategory(cat);
-              const isEditing = editingCat === cat;
-              return (
-                <div
-                  key={cat}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-background/50"
-                  data-ocid={`categories.item.${categories.indexOf(cat) + 1}`}
-                >
-                  <Tag className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                  {isEditing ? (
-                    <Input
-                      autoFocus
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          void handleConfirmRename();
-                        }
-                        if (e.key === "Escape") setEditingCat(null);
-                      }}
-                      className="h-7 text-sm bg-background border-input flex-1"
-                      maxLength={50}
-                      data-ocid="categories.rename.input"
-                    />
-                  ) : (
-                    <span className="flex-1 text-sm font-medium truncate">
-                      {cat}
-                    </span>
-                  )}
-                  <span className="text-xs text-muted-foreground shrink-0">
-                    {count} {count === 1 ? "routine" : "routines"}
-                  </span>
-                  {isEditing ? (
-                    <div className="flex items-center gap-1 shrink-0">
-                      <Button
-                        size="icon"
-                        className="w-6 h-6"
-                        style={{
-                          background: "oklch(0.78 0.14 72)",
-                          color: "oklch(0.12 0.008 260)",
+            <>
+              {/* Column headers */}
+              <div className="flex items-center gap-2 px-3 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                <span className="flex-1">Category</span>
+                <span className="w-16 text-center">Weight %</span>
+                <span className="w-14 text-right">Routines</span>
+                <span className="w-14" />
+              </div>
+
+              {categories.map((cat, idx) => {
+                const count = countForCategory(cat);
+                const isEditing = editingCat === cat;
+                const weightEntry = weights.find((w) => w.name === cat);
+                const currentWeight = weightEntry?.weight ?? 0;
+
+                return (
+                  <div
+                    key={cat}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-background/50"
+                    data-ocid={`categories.item.${idx + 1}`}
+                  >
+                    <Tag className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                    {isEditing ? (
+                      <Input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void handleConfirmRename();
+                          }
+                          if (e.key === "Escape") setEditingCat(null);
                         }}
-                        onClick={handleConfirmRename}
-                        disabled={isUpdating}
-                        data-ocid="categories.rename.confirm_button"
-                      >
-                        <Check className="w-3 h-3" />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="w-6 h-6 text-muted-foreground"
-                        onClick={() => setEditingCat(null)}
-                        data-ocid="categories.rename.cancel_button"
-                      >
-                        ✕
-                      </Button>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1 shrink-0">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="w-7 h-7 text-muted-foreground hover:text-foreground"
-                        onClick={() => handleStartRename(cat)}
-                        disabled={isUpdating}
-                        data-ocid={`categories.edit_button.${categories.indexOf(cat) + 1}`}
-                      >
-                        <Edit2 className="w-3 h-3" />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="w-7 h-7 text-muted-foreground hover:text-destructive"
-                        onClick={() => setConfirmDelete(cat)}
-                        disabled={isUpdating}
-                        data-ocid={`categories.delete_button.${categories.indexOf(cat) + 1}`}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </Button>
-                    </div>
-                  )}
+                        className="h-7 text-sm bg-background border-input flex-1"
+                        maxLength={50}
+                        data-ocid="categories.rename.input"
+                      />
+                    ) : (
+                      <span className="flex-1 text-sm font-medium truncate min-w-0">
+                        {cat}
+                      </span>
+                    )}
+
+                    {/* Weight input */}
+                    {!isEditing && (
+                      <div className="w-16 shrink-0">
+                        <Input
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={currentWeight}
+                          onChange={(e) =>
+                            handleWeightChange(cat, e.target.value)
+                          }
+                          className="h-7 w-full text-center text-sm bg-background border-input px-1"
+                          data-ocid={`categories.weight.input.${idx + 1}`}
+                        />
+                      </div>
+                    )}
+
+                    <span className="text-xs text-muted-foreground shrink-0 w-14 text-right">
+                      {count} {count === 1 ? "routine" : "routines"}
+                    </span>
+
+                    {isEditing ? (
+                      <div className="flex items-center gap-1 shrink-0 w-14 justify-end">
+                        <Button
+                          size="icon"
+                          className="w-6 h-6"
+                          style={{
+                            background: "oklch(0.78 0.14 72)",
+                            color: "oklch(0.12 0.008 260)",
+                          }}
+                          onClick={handleConfirmRename}
+                          disabled={isUpdating}
+                          data-ocid="categories.rename.confirm_button"
+                        >
+                          <Check className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="w-6 h-6 text-muted-foreground"
+                          onClick={() => setEditingCat(null)}
+                          data-ocid="categories.rename.cancel_button"
+                        >
+                          ✕
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 shrink-0 w-14 justify-end">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="w-7 h-7 text-muted-foreground hover:text-foreground"
+                          onClick={() => handleStartRename(cat)}
+                          disabled={isUpdating}
+                          data-ocid={`categories.edit_button.${idx + 1}`}
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="w-7 h-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => setConfirmDelete(cat)}
+                          disabled={isUpdating}
+                          data-ocid={`categories.delete_button.${idx + 1}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Weight total + controls */}
+              {categories.length > 0 && (
+                <div
+                  className="px-3 py-2.5 rounded-lg border space-y-2"
+                  style={{
+                    background: isValidTotal
+                      ? "oklch(0.72 0.16 150 / 0.06)"
+                      : "oklch(0.65 0.2 28 / 0.06)",
+                    borderColor: isValidTotal
+                      ? "oklch(0.72 0.16 150 / 0.3)"
+                      : "oklch(0.65 0.2 28 / 0.3)",
+                  }}
+                  data-ocid="categories.weight_total.card"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-foreground">
+                      Total weight
+                    </span>
+                    <span
+                      className="text-sm font-bold"
+                      style={{
+                        color: isValidTotal
+                          ? "oklch(0.72 0.16 150)"
+                          : "oklch(0.65 0.2 28)",
+                      }}
+                    >
+                      {totalWeight}%
+                      {!isValidTotal && (
+                        <span className="text-xs font-normal ml-1">
+                          (must equal 100%)
+                        </span>
+                      )}
+                    </span>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 h-8 text-xs border-border gap-1"
+                      onClick={handleAutoDistribute}
+                      data-ocid="categories.auto_distribute.button"
+                    >
+                      Auto-distribute
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={!isValidTotal}
+                      className="flex-1 h-8 text-xs font-semibold gap-1"
+                      style={
+                        isValidTotal
+                          ? {
+                              background: "oklch(0.78 0.14 72)",
+                              color: "oklch(0.12 0.008 260)",
+                            }
+                          : {}
+                      }
+                      onClick={handleSaveWeights}
+                      data-ocid="categories.save_weights.button"
+                    >
+                      <Check className="w-3 h-3" />
+                      Save Weights
+                    </Button>
+                  </div>
                 </div>
-              );
-            })
+              )}
+            </>
           )}
         </div>
 
