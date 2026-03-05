@@ -149,6 +149,7 @@ export function calculateStreak(
 // ─── Frequency Metadata Helpers ───────────────────────────────────────────────
 
 const FREQ_PREFIX_RE = /^__freq:(\{.*?\})__/;
+const CAT_PREFIX_RE = /__cat:([^_]*)__/;
 
 /** Parse the __freq:{...}__ prefix from description */
 export function parseFrequencyMeta(
@@ -185,6 +186,63 @@ export function encodeFrequencyMeta(
   userDesc: string,
 ): string {
   return `__freq:${JSON.stringify({ count, period })}__${userDesc}`;
+}
+
+// ─── Category Metadata Helpers ─────────────────────────────────────────────────
+
+/**
+ * Parses __cat:CategoryName__ from a description string.
+ * Returns the category name, or null if not present.
+ */
+export function parseCategoryMeta(description: string): string | null {
+  const match = CAT_PREFIX_RE.exec(description);
+  if (!match) return null;
+  const name = match[1]?.trim();
+  return name && name.length > 0 ? name : null;
+}
+
+/** Strips __cat:...__ from description */
+export function stripCategoryMeta(description: string): string {
+  return description.replace(CAT_PREFIX_RE, "");
+}
+
+/**
+ * Encodes category into description.
+ * Preserves existing __freq:...__ prefix if present.
+ * Inserts __cat:Name__ right after the freq prefix (if any), before user text.
+ * If category is empty/falsy, strips any existing __cat:...__ and returns description unchanged.
+ */
+export function encodeCategoryMeta(
+  category: string,
+  description: string,
+): string {
+  // First strip any existing cat meta from description
+  const withoutCat = stripCategoryMeta(description);
+
+  if (!category.trim()) {
+    return withoutCat;
+  }
+
+  const catTag = `__cat:${category.trim()}__`;
+  const freqMatch = FREQ_PREFIX_RE.exec(withoutCat);
+
+  if (freqMatch) {
+    // Insert after the freq prefix
+    const freqTag = freqMatch[0];
+    const rest = withoutCat.slice(freqTag.length);
+    return `${freqTag}${catTag}${rest}`;
+  }
+
+  // No freq prefix — prepend cat tag
+  return `${catTag}${withoutCat}`;
+}
+
+/**
+ * Returns clean user-visible description
+ * (strips both __freq:...__ and __cat:...__ meta prefixes).
+ */
+export function getCleanDescription(description: string): string {
+  return stripCategoryMeta(stripFrequencyMeta(description));
 }
 
 /** Returns true if this routine uses flexible frequency scheduling */

@@ -22,6 +22,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -36,12 +41,18 @@ import {
   BellOff,
   CalendarDays,
   Check,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Edit2,
+  FolderInput,
+  FolderOpen,
   ListChecks,
   Loader2,
   Plus,
   RefreshCw,
+  Settings2,
+  Tag,
   Trash2,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -56,14 +67,40 @@ import {
 } from "../hooks/useQueries";
 import {
   DAY_LABELS,
+  encodeCategoryMeta,
   encodeFrequencyMeta,
   formatFrequencyLabel,
   formatRepeatDays,
   formatTime12h,
+  getCleanDescription,
   isFrequencyRoutine,
+  parseCategoryMeta,
   parseFrequencyMeta,
+  stripCategoryMeta,
   stripFrequencyMeta,
 } from "../utils/routineHelpers";
+
+// ─── Category Storage ─────────────────────────────────────────────────────────
+
+const CATEGORIES_KEY = "drm_categories";
+
+function loadCategories(): string[] {
+  try {
+    const raw = localStorage.getItem(CATEGORIES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((x): x is string => typeof x === "string");
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+function saveCategories(cats: string[]): void {
+  localStorage.setItem(CATEGORIES_KEY, JSON.stringify(cats));
+}
 
 // ─── Form State ───────────────────────────────────────────────────────────────
 
@@ -83,6 +120,8 @@ interface RoutineFormData {
   reminderEnabled: boolean;
   reminderValue: number;
   reminderUnit: "minutes" | "hours" | "days";
+  // category
+  category: string;
 }
 
 const defaultForm: RoutineFormData = {
@@ -96,6 +135,7 @@ const defaultForm: RoutineFormData = {
   reminderEnabled: false,
   reminderValue: 30,
   reminderUnit: "minutes",
+  category: "",
 };
 
 const PRESETS = [
@@ -116,9 +156,11 @@ function formDataFromRoutine(routine: Routine): RoutineFormData {
       ? (routine.reminderOffset.unit as "minutes" | "hours" | "days")
       : "minutes";
 
+  const category = parseCategoryMeta(routine.description) ?? "";
+
   return {
     name: routine.name,
-    description: stripFrequencyMeta(routine.description),
+    description: getCleanDescription(routine.description),
     scheduledTime: routine.scheduledTime,
     scheduleMode: isFreq ? "flexible" : "specific",
     repeatDays: isFreq ? [0, 1, 2, 3, 4, 5, 6] : routine.repeatDays.map(Number),
@@ -127,6 +169,7 @@ function formDataFromRoutine(routine: Routine): RoutineFormData {
     reminderEnabled: routine.reminderEnabled,
     reminderValue: Number(routine.reminderOffset.value),
     reminderUnit,
+    category,
   };
 }
 
@@ -134,19 +177,25 @@ function buildRepeatDaysAndDescription(form: RoutineFormData): {
   repeatDays: bigint[];
   description: string;
 } {
+  let baseDesc: string;
   if (form.scheduleMode === "flexible") {
-    return {
-      repeatDays: [0n, 1n, 2n, 3n, 4n, 5n, 6n],
-      description: encodeFrequencyMeta(
-        form.freqCount,
-        form.freqPeriod,
-        form.description.trim(),
-      ),
-    };
+    baseDesc = encodeFrequencyMeta(
+      form.freqCount,
+      form.freqPeriod,
+      form.description.trim(),
+    );
+  } else {
+    baseDesc = form.description.trim();
   }
+
+  const description = encodeCategoryMeta(form.category, baseDesc);
+
   return {
-    repeatDays: [...form.repeatDays].sort().map(BigInt),
-    description: form.description.trim(),
+    repeatDays:
+      form.scheduleMode === "flexible"
+        ? [0n, 1n, 2n, 3n, 4n, 5n, 6n]
+        : [...form.repeatDays].sort().map(BigInt),
+    description,
   };
 }
 
@@ -157,6 +206,131 @@ function buildReminderOffset(form: RoutineFormData): ReminderOffset {
   return { value: BigInt(form.reminderValue), unit: form.reminderUnit };
 }
 
+// ─── Category Selector ────────────────────────────────────────────────────────
+
+interface CategorySelectorProps {
+  value: string;
+  categories: string[];
+  onChange: (cat: string) => void;
+  onAddCategory: (cat: string) => void;
+}
+
+function CategorySelector({
+  value,
+  categories,
+  onChange,
+  onAddCategory,
+}: CategorySelectorProps) {
+  const [isAddingNew, setIsAddingNew] = useState(false);
+  const [newCatInput, setNewCatInput] = useState("");
+
+  const handleSelectChange = (val: string) => {
+    if (val === "__new__") {
+      setIsAddingNew(true);
+      setNewCatInput("");
+    } else {
+      setIsAddingNew(false);
+      onChange(val === "__none__" ? "" : val);
+    }
+  };
+
+  const handleConfirmNew = () => {
+    const trimmed = newCatInput.trim();
+    if (!trimmed) return;
+    onAddCategory(trimmed);
+    onChange(trimmed);
+    setIsAddingNew(false);
+    setNewCatInput("");
+  };
+
+  const handleCancelNew = () => {
+    setIsAddingNew(false);
+    setNewCatInput("");
+  };
+
+  if (isAddingNew) {
+    return (
+      <div className="flex items-center gap-2">
+        <Input
+          autoFocus
+          placeholder="New category name..."
+          value={newCatInput}
+          onChange={(e) => setNewCatInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleConfirmNew();
+            }
+            if (e.key === "Escape") handleCancelNew();
+          }}
+          className="bg-background border-input text-sm"
+          maxLength={50}
+          data-ocid="routine.category.input"
+        />
+        <Button
+          type="button"
+          size="sm"
+          onClick={handleConfirmNew}
+          className="shrink-0 h-9 px-3 font-semibold"
+          style={{
+            background: "oklch(0.78 0.14 72)",
+            color: "oklch(0.12 0.008 260)",
+          }}
+          data-ocid="routine.category.confirm_button"
+        >
+          <Check className="w-3.5 h-3.5" />
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={handleCancelNew}
+          className="shrink-0 h-9 px-3 text-muted-foreground"
+          data-ocid="routine.category.cancel_button"
+        >
+          ✕
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <Select
+      value={value === "" ? "__none__" : value}
+      onValueChange={handleSelectChange}
+    >
+      <SelectTrigger
+        className="w-full bg-background border-input"
+        data-ocid="routine.category.select"
+      >
+        <div className="flex items-center gap-2">
+          <Tag className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+          <SelectValue placeholder="Uncategorised" />
+        </div>
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__none__">
+          <span className="text-muted-foreground italic">Uncategorised</span>
+        </SelectItem>
+        {categories.map((cat) => (
+          <SelectItem key={cat} value={cat}>
+            {cat}
+          </SelectItem>
+        ))}
+        <SelectItem value="__new__">
+          <span
+            className="flex items-center gap-1.5 font-medium"
+            style={{ color: "oklch(0.78 0.14 72)" }}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            New category...
+          </span>
+        </SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
+
 // ─── Form Dialog ──────────────────────────────────────────────────────────────
 
 interface RoutineFormDialogProps {
@@ -165,6 +339,8 @@ interface RoutineFormDialogProps {
   editRoutine?: Routine | null;
   onSubmit: (data: RoutineFormData) => Promise<void>;
   isPending: boolean;
+  categories: string[];
+  onAddCategory: (cat: string) => void;
 }
 
 function RoutineFormDialog({
@@ -173,6 +349,8 @@ function RoutineFormDialog({
   editRoutine,
   onSubmit,
   isPending,
+  categories,
+  onAddCategory,
 }: RoutineFormDialogProps) {
   const [form, setForm] = useState<RoutineFormData>(() =>
     editRoutine ? formDataFromRoutine(editRoutine) : defaultForm,
@@ -287,6 +465,20 @@ function RoutineFormDialog({
                 {errors.name}
               </p>
             )}
+          </div>
+
+          {/* Category */}
+          <div className="space-y-1.5">
+            <Label className="text-sm text-foreground/80">Category</Label>
+            <CategorySelector
+              value={form.category}
+              categories={categories}
+              onChange={(cat) => setForm((p) => ({ ...p, category: cat }))}
+              onAddCategory={(cat) => {
+                onAddCategory(cat);
+                setForm((p) => ({ ...p, category: cat }));
+              }}
+            />
           </div>
 
           {/* Description */}
@@ -637,6 +829,556 @@ function RoutineFormDialog({
   );
 }
 
+// ─── Manage Categories Dialog ─────────────────────────────────────────────────
+
+interface ManageCategoriesDialogProps {
+  open: boolean;
+  onClose: () => void;
+  categories: string[];
+  routines: Routine[];
+  onRenameCategory: (oldName: string, newName: string) => Promise<void>;
+  onDeleteCategory: (name: string) => Promise<void>;
+  isUpdating: boolean;
+}
+
+function ManageCategoriesDialog({
+  open,
+  onClose,
+  categories,
+  routines,
+  onRenameCategory,
+  onDeleteCategory,
+  isUpdating,
+}: ManageCategoriesDialogProps) {
+  const [editingCat, setEditingCat] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const countForCategory = (cat: string) =>
+    routines.filter((r) => parseCategoryMeta(r.description) === cat).length;
+
+  const handleStartRename = (cat: string) => {
+    setEditingCat(cat);
+    setRenameValue(cat);
+  };
+
+  const handleConfirmRename = async () => {
+    if (!editingCat || !renameValue.trim() || renameValue.trim() === editingCat)
+      return;
+    await onRenameCategory(editingCat, renameValue.trim());
+    setEditingCat(null);
+    setRenameValue("");
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        className="max-w-sm bg-card border-border text-foreground"
+        data-ocid="categories.dialog"
+      >
+        <DialogHeader>
+          <DialogTitle className="font-display text-lg flex items-center gap-2">
+            <Settings2
+              className="w-4 h-4"
+              style={{ color: "oklch(0.78 0.14 72)" }}
+            />
+            Manage Categories
+          </DialogTitle>
+          <DialogDescription className="text-muted-foreground text-sm">
+            Rename or delete your task categories.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-2 mt-2 max-h-72 overflow-y-auto">
+          {categories.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-6">
+              No categories yet. Add one when creating a routine.
+            </p>
+          ) : (
+            categories.map((cat) => {
+              const count = countForCategory(cat);
+              const isEditing = editingCat === cat;
+              return (
+                <div
+                  key={cat}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-background/50"
+                  data-ocid={`categories.item.${categories.indexOf(cat) + 1}`}
+                >
+                  <Tag className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                  {isEditing ? (
+                    <Input
+                      autoFocus
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleConfirmRename();
+                        }
+                        if (e.key === "Escape") setEditingCat(null);
+                      }}
+                      className="h-7 text-sm bg-background border-input flex-1"
+                      maxLength={50}
+                      data-ocid="categories.rename.input"
+                    />
+                  ) : (
+                    <span className="flex-1 text-sm font-medium truncate">
+                      {cat}
+                    </span>
+                  )}
+                  <span className="text-xs text-muted-foreground shrink-0">
+                    {count} {count === 1 ? "routine" : "routines"}
+                  </span>
+                  {isEditing ? (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="icon"
+                        className="w-6 h-6"
+                        style={{
+                          background: "oklch(0.78 0.14 72)",
+                          color: "oklch(0.12 0.008 260)",
+                        }}
+                        onClick={handleConfirmRename}
+                        disabled={isUpdating}
+                        data-ocid="categories.rename.confirm_button"
+                      >
+                        <Check className="w-3 h-3" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="w-6 h-6 text-muted-foreground"
+                        onClick={() => setEditingCat(null)}
+                        data-ocid="categories.rename.cancel_button"
+                      >
+                        ✕
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="w-7 h-7 text-muted-foreground hover:text-foreground"
+                        onClick={() => handleStartRename(cat)}
+                        disabled={isUpdating}
+                        data-ocid={`categories.edit_button.${categories.indexOf(cat) + 1}`}
+                      >
+                        <Edit2 className="w-3 h-3" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="w-7 h-7 text-muted-foreground hover:text-destructive"
+                        onClick={() => setConfirmDelete(cat)}
+                        disabled={isUpdating}
+                        data-ocid={`categories.delete_button.${categories.indexOf(cat) + 1}`}
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button
+            variant="ghost"
+            onClick={onClose}
+            className="w-full"
+            data-ocid="categories.close_button"
+          >
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+
+      {/* Delete confirmation */}
+      <AlertDialog
+        open={!!confirmDelete}
+        onOpenChange={(o) => !o && setConfirmDelete(null)}
+      >
+        <AlertDialogContent
+          className="bg-card border-border text-foreground"
+          data-ocid="categories.delete.dialog"
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display">
+              Delete Category?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground">
+              Delete{" "}
+              <span className="font-semibold text-foreground">
+                "{confirmDelete}"
+              </span>
+              ? Routines in this category will become Uncategorised.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              className="border-border text-foreground"
+              data-ocid="categories.delete.cancel_button"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                if (confirmDelete) {
+                  await onDeleteCategory(confirmDelete);
+                  setConfirmDelete(null);
+                }
+              }}
+              disabled={isUpdating}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-ocid="categories.delete.confirm_button"
+            >
+              {isUpdating ? (
+                <>
+                  <Loader2 className="mr-2 w-3.5 h-3.5 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Dialog>
+  );
+}
+
+// ─── Assign Uncategorised Dialog ──────────────────────────────────────────────
+
+interface AssignUncategorisedDialogProps {
+  open: boolean;
+  onClose: () => void;
+  uncategorisedRoutines: Routine[];
+  categories: string[];
+  onAddCategory: (cat: string) => void;
+  onAssign: (routineIds: bigint[], category: string) => Promise<void>;
+  isAssigning: boolean;
+}
+
+function AssignUncategorisedDialog({
+  open,
+  onClose,
+  uncategorisedRoutines,
+  categories,
+  onAddCategory,
+  onAssign,
+  isAssigning,
+}: AssignUncategorisedDialogProps) {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(uncategorisedRoutines.map((r) => r.id.toString())),
+  );
+  const [targetCategory, setTargetCategory] = useState<string>("");
+
+  // Reset when dialog opens/routines change
+  useEffect(() => {
+    if (open) {
+      setSelectedIds(
+        new Set(uncategorisedRoutines.map((r) => r.id.toString())),
+      );
+      setTargetCategory("");
+    }
+  }, [open, uncategorisedRoutines]);
+
+  const toggleRoutine = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selectedIds.size === uncategorisedRoutines.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(
+        new Set(uncategorisedRoutines.map((r) => r.id.toString())),
+      );
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (!targetCategory || selectedIds.size === 0) return;
+    const ids = uncategorisedRoutines
+      .filter((r) => selectedIds.has(r.id.toString()))
+      .map((r) => r.id);
+    await onAssign(ids, targetCategory);
+  };
+
+  const allChecked = selectedIds.size === uncategorisedRoutines.length;
+  const someChecked =
+    selectedIds.size > 0 && selectedIds.size < uncategorisedRoutines.length;
+  const canConfirm = targetCategory.trim() !== "" && selectedIds.size > 0;
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        className="max-w-md bg-card border-border text-foreground"
+        data-ocid="uncategorised.assign.dialog"
+      >
+        <DialogHeader>
+          <DialogTitle className="font-display text-lg flex items-center gap-2">
+            <FolderInput
+              className="w-4 h-4"
+              style={{ color: "oklch(0.78 0.14 72)" }}
+            />
+            Assign to Category
+          </DialogTitle>
+          <DialogDescription className="text-muted-foreground text-sm">
+            Move selected uncategorised routines into a category.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 mt-1">
+          {/* Category picker */}
+          <div className="space-y-1.5">
+            <Label className="text-sm text-foreground/80">
+              Target category
+            </Label>
+            <CategorySelector
+              value={targetCategory}
+              categories={categories}
+              onChange={setTargetCategory}
+              onAddCategory={(cat) => {
+                onAddCategory(cat);
+                setTargetCategory(cat);
+              }}
+            />
+          </div>
+
+          {/* Routine list with checkboxes */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <Label className="text-sm text-foreground/80">
+                Routines to move
+              </Label>
+              <button
+                type="button"
+                onClick={toggleAll}
+                className="text-xs font-medium transition-colors"
+                style={{ color: "oklch(0.78 0.14 72)" }}
+              >
+                {allChecked ? "Deselect all" : "Select all"}
+              </button>
+            </div>
+
+            {/* Select-all checkbox row */}
+            <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-background/60 border border-border/50">
+              <Checkbox
+                id="assign-select-all"
+                checked={
+                  allChecked ? true : someChecked ? "indeterminate" : false
+                }
+                onCheckedChange={toggleAll}
+                className="border-border"
+              />
+              <Label
+                htmlFor="assign-select-all"
+                className="text-xs text-muted-foreground cursor-pointer select-none font-medium"
+              >
+                {selectedIds.size} of {uncategorisedRoutines.length} selected
+              </Label>
+            </div>
+
+            <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+              {uncategorisedRoutines.map((routine, i) => {
+                const idStr = routine.id.toString();
+                const checked = selectedIds.has(idStr);
+                return (
+                  <label
+                    key={idStr}
+                    htmlFor={`assign-routine-${i}`}
+                    className={`flex items-center gap-2.5 px-2.5 py-2 rounded-lg border transition-colors cursor-pointer ${
+                      checked
+                        ? "border-border bg-background/80"
+                        : "border-transparent bg-transparent hover:bg-background/40"
+                    }`}
+                  >
+                    <Checkbox
+                      id={`assign-routine-${i}`}
+                      checked={checked}
+                      onCheckedChange={() => toggleRoutine(idStr)}
+                      className="border-border shrink-0"
+                      data-ocid={`uncategorised.assign.routine.checkbox.${i + 1}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium text-foreground truncate block">
+                        {routine.name}
+                      </span>
+                      {getCleanDescription(routine.description) && (
+                        <span className="text-xs text-muted-foreground truncate block">
+                          {getCleanDescription(routine.description)}
+                        </span>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 mt-2">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={onClose}
+            className="flex-1 sm:flex-none"
+            data-ocid="uncategorised.assign.cancel_button"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={!canConfirm || isAssigning}
+            onClick={handleConfirm}
+            className="flex-1 sm:flex-none font-semibold"
+            style={{
+              background: canConfirm ? "oklch(0.78 0.14 72)" : undefined,
+              color: canConfirm ? "oklch(0.12 0.008 260)" : undefined,
+            }}
+            data-ocid="uncategorised.assign.confirm_button"
+          >
+            {isAssigning ? (
+              <>
+                <Loader2 className="mr-2 w-3.5 h-3.5 animate-spin" />
+                Assigning...
+              </>
+            ) : (
+              <>
+                <FolderInput className="mr-1.5 w-3.5 h-3.5" />
+                Assign {selectedIds.size > 0 ? `(${selectedIds.size})` : ""}
+              </>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Quick Assign Popover (per-row) ───────────────────────────────────────────
+
+interface QuickAssignPopoverProps {
+  routineIndex: number;
+  categories: string[];
+  onAddCategory: (cat: string) => void;
+  onAssign: (category: string) => Promise<void>;
+  isAssigning: boolean;
+}
+
+function QuickAssignPopover({
+  routineIndex,
+  categories,
+  onAddCategory,
+  onAssign,
+  isAssigning,
+}: QuickAssignPopoverProps) {
+  const [open, setOpen] = useState(false);
+  const [selectedCat, setSelectedCat] = useState("");
+
+  const handleOpen = (isOpen: boolean) => {
+    setOpen(isOpen);
+    if (!isOpen) setSelectedCat("");
+  };
+
+  const handleConfirm = async () => {
+    if (!selectedCat) return;
+    await onAssign(selectedCat);
+    setOpen(false);
+    setSelectedCat("");
+  };
+
+  return (
+    <Popover open={open} onOpenChange={handleOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="w-8 h-8 text-muted-foreground hover:text-foreground"
+          title="Assign to category"
+          data-ocid={`routine.assign_category.button.${routineIndex + 1}`}
+        >
+          <Tag className="w-3.5 h-3.5" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-64 p-3 bg-card border-border shadow-lg"
+        align="end"
+        data-ocid="routine.assign_category.popover"
+      >
+        <div className="space-y-3">
+          <div className="flex items-center gap-1.5">
+            <Tag
+              className="w-3.5 h-3.5 shrink-0"
+              style={{ color: "oklch(0.78 0.14 72)" }}
+            />
+            <p className="text-sm font-semibold text-foreground">
+              Assign category
+            </p>
+          </div>
+          <CategorySelector
+            value={selectedCat}
+            categories={categories}
+            onChange={setSelectedCat}
+            onAddCategory={(cat) => {
+              onAddCategory(cat);
+              setSelectedCat(cat);
+            }}
+          />
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="flex-1 text-muted-foreground"
+              onClick={() => handleOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!selectedCat || isAssigning}
+              onClick={handleConfirm}
+              className="flex-1 font-semibold"
+              style={
+                selectedCat
+                  ? {
+                      background: "oklch(0.78 0.14 72)",
+                      color: "oklch(0.12 0.008 260)",
+                    }
+                  : {}
+              }
+            >
+              {isAssigning ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <>
+                  <Check className="w-3.5 h-3.5 mr-1" />
+                  Assign
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 // ─── Routine Row ──────────────────────────────────────────────────────────────
 
 interface RoutineRowProps {
@@ -644,6 +1386,10 @@ interface RoutineRowProps {
   index: number;
   onEdit: (routine: Routine) => void;
   onDelete: (routine: Routine) => void;
+  onAssignCategory?: (routine: Routine, category: string) => Promise<void>;
+  categories?: string[];
+  onAddCategory?: (cat: string) => void;
+  isAssigningCategory?: boolean;
 }
 
 function formatReminderChip(routine: Routine): string {
@@ -655,12 +1401,21 @@ function formatReminderChip(routine: Routine): string {
   return "";
 }
 
-function RoutineRow({ routine, index, onEdit, onDelete }: RoutineRowProps) {
+function RoutineRow({
+  routine,
+  index,
+  onEdit,
+  onDelete,
+  onAssignCategory,
+  categories = [],
+  onAddCategory,
+  isAssigningCategory = false,
+}: RoutineRowProps) {
   const isFreq = isFrequencyRoutine(routine);
   const freqMeta = isFreq ? parseFrequencyMeta(routine.description) : null;
-  const displayDescription = isFreq
-    ? stripFrequencyMeta(routine.description)
-    : routine.description;
+  const displayDescription = getCleanDescription(routine.description);
+  const category = parseCategoryMeta(routine.description);
+  const isUncategorised = !category;
 
   return (
     <motion.div
@@ -700,6 +1455,18 @@ function RoutineRow({ routine, index, onEdit, onDelete }: RoutineRowProps) {
           <h3 className="font-semibold text-sm text-foreground truncate">
             {routine.name}
           </h3>
+          {category && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0"
+              style={{
+                background: "oklch(0.55 0.14 280 / 0.15)",
+                color: "oklch(0.72 0.14 280)",
+              }}
+            >
+              <Tag className="w-2.5 h-2.5" />
+              {category}
+            </span>
+          )}
           {routine.reminderEnabled && (
             <div
               className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium"
@@ -752,6 +1519,15 @@ function RoutineRow({ routine, index, onEdit, onDelete }: RoutineRowProps) {
 
       {/* Actions */}
       <div className="flex items-center gap-1 shrink-0 mt-0.5">
+        {isUncategorised && onAssignCategory && onAddCategory && (
+          <QuickAssignPopover
+            routineIndex={index}
+            categories={categories}
+            onAddCategory={onAddCategory}
+            onAssign={(cat) => onAssignCategory(routine, cat)}
+            isAssigning={isAssigningCategory}
+          />
+        )}
         <Button
           size="icon"
           variant="ghost"
@@ -775,6 +1551,130 @@ function RoutineRow({ routine, index, onEdit, onDelete }: RoutineRowProps) {
   );
 }
 
+// ─── Category Group Section ───────────────────────────────────────────────────
+
+interface CategoryGroupProps {
+  categoryName: string;
+  routines: Routine[];
+  startIndex: number;
+  onEdit: (routine: Routine) => void;
+  onDelete: (routine: Routine) => void;
+  onAssignCategory?: (routine: Routine, category: string) => Promise<void>;
+  onBulkAssign?: () => void;
+  categories?: string[];
+  onAddCategory?: (cat: string) => void;
+  isAssigningCategory?: boolean;
+}
+
+function CategoryGroup({
+  categoryName,
+  routines,
+  startIndex,
+  onEdit,
+  onDelete,
+  onAssignCategory,
+  onBulkAssign,
+  categories,
+  onAddCategory,
+  isAssigningCategory,
+}: CategoryGroupProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const isUncategorised = categoryName === "Uncategorised";
+
+  return (
+    <div className="space-y-2">
+      {/* Category header */}
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="flex-1 flex items-center gap-2 px-1 py-1 rounded-lg hover:bg-foreground/5 transition-colors group"
+          data-ocid={`category.${categoryName.toLowerCase().replace(/[^a-z0-9]/g, "_")}.toggle`}
+        >
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <FolderOpen
+              className="w-3.5 h-3.5 shrink-0"
+              style={{ color: "oklch(0.72 0.14 280)" }}
+            />
+            <span
+              className="text-xs font-semibold uppercase tracking-wider truncate"
+              style={{ color: "oklch(0.72 0.14 280)" }}
+            >
+              {categoryName}
+            </span>
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0"
+              style={{
+                background: "oklch(0.55 0.14 280 / 0.12)",
+                color: "oklch(0.72 0.14 280)",
+              }}
+            >
+              {routines.length}
+            </span>
+          </div>
+          <div className="shrink-0 text-muted-foreground group-hover:text-foreground transition-colors">
+            {collapsed ? (
+              <ChevronDown className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronUp className="w-3.5 h-3.5" />
+            )}
+          </div>
+        </button>
+
+        {/* Assign to category button — only for Uncategorised */}
+        {isUncategorised && onBulkAssign && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={(e) => {
+              e.stopPropagation();
+              onBulkAssign();
+            }}
+            className="h-7 px-2.5 text-xs gap-1.5 shrink-0 font-medium transition-colors"
+            style={{ color: "oklch(0.78 0.14 72)" }}
+            title="Assign all uncategorised to a category"
+            data-ocid="uncategorised.assign_button"
+          >
+            <FolderInput className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Assign to category</span>
+          </Button>
+        )}
+      </div>
+
+      {/* Routines in this group */}
+      <AnimatePresence initial={false}>
+        {!collapsed && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            className="space-y-2 pl-2 border-l-2"
+            style={{ borderColor: "oklch(0.55 0.14 280 / 0.25)" }}
+          >
+            {routines.map((routine, i) => (
+              <RoutineRow
+                key={routine.id.toString()}
+                routine={routine}
+                index={startIndex + i}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                onAssignCategory={
+                  isUncategorised ? onAssignCategory : undefined
+                }
+                categories={categories}
+                onAddCategory={onAddCategory}
+                isAssigningCategory={isAssigningCategory}
+              />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function RoutinesPage() {
@@ -783,9 +1683,23 @@ export default function RoutinesPage() {
   const updateRoutine = useUpdateRoutine();
   const deleteRoutine = useDeleteRoutine();
 
+  const [categories, setCategories] = useState<string[]>(() =>
+    loadCategories(),
+  );
   const [showForm, setShowForm] = useState(false);
   const [editRoutine, setEditRoutine] = useState<Routine | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Routine | null>(null);
+  const [showManageCategories, setShowManageCategories] = useState(false);
+  const [isCategoryUpdating, setIsCategoryUpdating] = useState(false);
+  const [showAssignDialog, setShowAssignDialog] = useState(false);
+  const [isAssigning, setIsAssigning] = useState(false);
+
+  const addCategory = (cat: string) => {
+    if (!cat.trim() || categories.includes(cat.trim())) return;
+    const updated = [...categories, cat.trim()];
+    setCategories(updated);
+    saveCategories(updated);
+  };
 
   const handleCreate = async (data: RoutineFormData) => {
     const { repeatDays, description } = buildRepeatDaysAndDescription(data);
@@ -838,6 +1752,169 @@ export default function RoutinesPage() {
     }
   };
 
+  const handleRenameCategory = async (oldName: string, newName: string) => {
+    if (!newName.trim() || newName.trim() === oldName) return;
+    setIsCategoryUpdating(true);
+    try {
+      // Update all routines that belong to this category
+      const affected = routines.filter(
+        (r) => parseCategoryMeta(r.description) === oldName,
+      );
+      await Promise.all(
+        affected.map((r) => {
+          const newDesc = encodeCategoryMeta(
+            newName.trim(),
+            stripCategoryMeta(r.description),
+          );
+          return updateRoutine.mutateAsync({
+            id: r.id,
+            updates: { description: newDesc },
+          });
+        }),
+      );
+
+      // Update local categories list
+      const updated = categories.map((c) =>
+        c === oldName ? newName.trim() : c,
+      );
+      setCategories(updated);
+      saveCategories(updated);
+      toast.success(`Category renamed to "${newName.trim()}"`);
+    } catch {
+      toast.error("Failed to rename category. Try again.");
+    } finally {
+      setIsCategoryUpdating(false);
+    }
+  };
+
+  const handleDeleteCategory = async (name: string) => {
+    setIsCategoryUpdating(true);
+    try {
+      // Remove category from all affected routines (make them uncategorised)
+      const affected = routines.filter(
+        (r) => parseCategoryMeta(r.description) === name,
+      );
+      await Promise.all(
+        affected.map((r) => {
+          const newDesc = stripCategoryMeta(r.description);
+          return updateRoutine.mutateAsync({
+            id: r.id,
+            updates: { description: newDesc },
+          });
+        }),
+      );
+
+      // Remove from categories list
+      const updated = categories.filter((c) => c !== name);
+      setCategories(updated);
+      saveCategories(updated);
+      toast.success(`Category "${name}" deleted`);
+    } catch {
+      toast.error("Failed to delete category. Try again.");
+    } finally {
+      setIsCategoryUpdating(false);
+    }
+  };
+
+  const handleBulkAssign = async (routineIds: bigint[], category: string) => {
+    setIsAssigning(true);
+    try {
+      // Ensure category is persisted in the list
+      if (!categories.includes(category.trim())) {
+        addCategory(category.trim());
+      }
+
+      const affected = routines.filter((r) =>
+        routineIds.some((id) => id === r.id),
+      );
+      await Promise.all(
+        affected.map((r) => {
+          const newDesc = encodeCategoryMeta(
+            category.trim(),
+            stripCategoryMeta(r.description),
+          );
+          return updateRoutine.mutateAsync({
+            id: r.id,
+            updates: { description: newDesc },
+          });
+        }),
+      );
+
+      toast.success(
+        `${routineIds.length} routine${routineIds.length !== 1 ? "s" : ""} moved to "${category.trim()}"`,
+      );
+      setShowAssignDialog(false);
+    } catch {
+      toast.error("Failed to assign routines. Try again.");
+    } finally {
+      setIsAssigning(false);
+    }
+  };
+
+  const handleAssignSingleRoutine = async (
+    routine: Routine,
+    category: string,
+  ) => {
+    setIsAssigning(true);
+    try {
+      if (!categories.includes(category.trim())) {
+        addCategory(category.trim());
+      }
+      const newDesc = encodeCategoryMeta(
+        category.trim(),
+        stripCategoryMeta(routine.description),
+      );
+      await updateRoutine.mutateAsync({
+        id: routine.id,
+        updates: { description: newDesc },
+      });
+      toast.success(`"${routine.name}" moved to "${category.trim()}"`);
+    } catch {
+      toast.error("Failed to assign routine. Try again.");
+    } finally {
+      setIsAssigning(false);
+    }
+  };
+
+  // Group routines by category
+  const groupedRoutines = (() => {
+    const groups = new Map<string, Routine[]>();
+
+    for (const routine of routines) {
+      const cat = parseCategoryMeta(routine.description) ?? "";
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat)!.push(routine);
+    }
+
+    // Sort: named categories first (in order from categories list), then uncategorised last
+    const result: { categoryName: string; items: Routine[] }[] = [];
+
+    for (const cat of categories) {
+      const items = groups.get(cat);
+      if (items && items.length > 0) {
+        result.push({ categoryName: cat, items });
+      }
+    }
+
+    // Categories in routines but not in the stored list (edge case)
+    for (const [cat, items] of groups.entries()) {
+      if (cat !== "" && !categories.includes(cat)) {
+        result.push({ categoryName: cat, items });
+      }
+    }
+
+    // Uncategorised last
+    const uncatItems = groups.get("") ?? [];
+    if (uncatItems.length > 0) {
+      result.push({ categoryName: "Uncategorised", items: uncatItems });
+    }
+
+    return result;
+  })();
+
+  // Flat index for deterministic row markers
+  let globalIndex = 0;
+
   return (
     <div className="min-h-screen pb-20 md:pb-8" data-ocid="routines.section">
       {/* Header */}
@@ -848,7 +1925,7 @@ export default function RoutinesPage() {
             "linear-gradient(135deg, oklch(0.165 0.012 255) 0%, oklch(0.13 0.008 260) 100%)",
         }}
       >
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
+        <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-display font-bold text-foreground">
               My Routines
@@ -858,19 +1935,31 @@ export default function RoutinesPage() {
               configured
             </p>
           </div>
-          <Button
-            onClick={() => setShowForm(true)}
-            className="gap-1.5 font-semibold"
-            style={{
-              background: "oklch(0.78 0.14 72)",
-              color: "oklch(0.12 0.008 260)",
-            }}
-            data-ocid="routine.add_button"
-          >
-            <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">Add Routine</span>
-            <span className="sm:hidden">Add</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowManageCategories(true)}
+              className="gap-1.5 text-muted-foreground hover:text-foreground text-xs"
+              data-ocid="categories.open_modal_button"
+            >
+              <Settings2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Manage Categories</span>
+            </Button>
+            <Button
+              onClick={() => setShowForm(true)}
+              className="gap-1.5 font-semibold"
+              style={{
+                background: "oklch(0.78 0.14 72)",
+                color: "oklch(0.12 0.008 260)",
+              }}
+              data-ocid="routine.add_button"
+            >
+              <Plus className="w-4 h-4" />
+              <span className="hidden sm:inline">Add Routine</span>
+              <span className="sm:hidden">Add</span>
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -919,16 +2008,31 @@ export default function RoutinesPage() {
           </motion.div>
         ) : (
           <AnimatePresence>
-            <div className="space-y-2.5">
-              {routines.map((routine, i) => (
-                <RoutineRow
-                  key={routine.id.toString()}
-                  routine={routine}
-                  index={i}
-                  onEdit={setEditRoutine}
-                  onDelete={setDeleteTarget}
-                />
-              ))}
+            <div className="space-y-6">
+              {groupedRoutines.map(({ categoryName, items }) => {
+                const startIdx = globalIndex;
+                globalIndex += items.length;
+
+                return (
+                  <CategoryGroup
+                    key={categoryName}
+                    categoryName={categoryName}
+                    routines={items}
+                    startIndex={startIdx}
+                    onEdit={setEditRoutine}
+                    onDelete={setDeleteTarget}
+                    onBulkAssign={
+                      categoryName === "Uncategorised"
+                        ? () => setShowAssignDialog(true)
+                        : undefined
+                    }
+                    onAssignCategory={handleAssignSingleRoutine}
+                    categories={categories}
+                    onAddCategory={addCategory}
+                    isAssigningCategory={isAssigning}
+                  />
+                );
+              })}
             </div>
           </AnimatePresence>
         )}
@@ -941,6 +2045,8 @@ export default function RoutinesPage() {
           onClose={() => setShowForm(false)}
           onSubmit={handleCreate}
           isPending={createRoutine.isPending}
+          categories={categories}
+          onAddCategory={addCategory}
         />
       )}
 
@@ -952,8 +2058,34 @@ export default function RoutinesPage() {
           editRoutine={editRoutine}
           onSubmit={handleUpdate}
           isPending={updateRoutine.isPending}
+          categories={categories}
+          onAddCategory={addCategory}
         />
       )}
+
+      {/* Manage Categories dialog */}
+      <ManageCategoriesDialog
+        open={showManageCategories}
+        onClose={() => setShowManageCategories(false)}
+        categories={categories}
+        routines={routines}
+        onRenameCategory={handleRenameCategory}
+        onDeleteCategory={handleDeleteCategory}
+        isUpdating={isCategoryUpdating}
+      />
+
+      {/* Assign Uncategorised dialog */}
+      <AssignUncategorisedDialog
+        open={showAssignDialog}
+        onClose={() => setShowAssignDialog(false)}
+        uncategorisedRoutines={routines.filter(
+          (r) => !parseCategoryMeta(r.description),
+        )}
+        categories={categories}
+        onAddCategory={addCategory}
+        onAssign={handleBulkAssign}
+        isAssigning={isAssigning}
+      />
 
       {/* Delete confirmation */}
       <AlertDialog

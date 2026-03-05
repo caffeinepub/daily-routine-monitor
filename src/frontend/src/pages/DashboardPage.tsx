@@ -12,6 +12,7 @@ import {
   Clock,
   RefreshCw,
   RotateCcw,
+  Tag,
   TrendingUp,
   XCircle,
   Zap,
@@ -37,14 +38,15 @@ import {
   formatDateFull,
   formatRepeatDays,
   formatTime12h,
+  getCleanDescription,
   getDayOfWeekForDate,
   getTodayString,
   getWeekDates,
   getWeekStartWithMode,
   groupRoutines,
   isFrequencyRoutine,
+  parseCategoryMeta,
   parseFrequencyMeta,
-  stripFrequencyMeta,
 } from "../utils/routineHelpers";
 
 interface DashboardPageProps {
@@ -169,7 +171,7 @@ function RoutineCard({
 }) {
   const config = GROUP_CONFIG[group];
   const canAct = group !== "completed" && group !== "skipped";
-  const displayDescription = stripFrequencyMeta(item.routine.description);
+  const displayDescription = getCleanDescription(item.routine.description);
 
   return (
     <motion.div
@@ -327,6 +329,31 @@ function RoutineCard({
   );
 }
 
+// ─── Category Sub-Label ───────────────────────────────────────────────────────
+
+function CategorySubLabel({ name }: { name: string }) {
+  return (
+    <div className="flex items-center gap-1.5 mt-3 mb-1.5 first:mt-0">
+      <Tag
+        className="w-3 h-3 shrink-0"
+        style={{ color: "oklch(0.72 0.14 280)" }}
+      />
+      <span
+        className="text-[11px] font-semibold uppercase tracking-wider"
+        style={{ color: "oklch(0.72 0.14 280)" }}
+      >
+        {name}
+      </span>
+      <div
+        className="flex-1 h-px"
+        style={{ background: "oklch(0.55 0.14 280 / 0.2)" }}
+      />
+    </div>
+  );
+}
+
+// ─── Group Section ─────────────────────────────────────────────────────────────
+
 function GroupSection({
   groupKey,
   items,
@@ -348,6 +375,31 @@ function GroupSection({
   const config = GROUP_CONFIG[groupKey];
   const Icon = config.icon;
 
+  // Group by category. Preserve insertion order.
+  const categoryMap = new Map<string, DailyRoutineStatus[]>();
+  for (const item of items) {
+    const cat = parseCategoryMeta(item.routine.description) ?? "";
+    if (!categoryMap.has(cat)) categoryMap.set(cat, []);
+    categoryMap.get(cat)!.push(item);
+  }
+
+  const showCategoryLabels =
+    categoryMap.size > 1 ||
+    (categoryMap.size === 1 && categoryMap.keys().next().value !== "");
+
+  // Build ordered list: named categories first, then uncategorised
+  const orderedGroups: { catName: string; catItems: DailyRoutineStatus[] }[] =
+    [];
+  for (const [cat, catItems] of categoryMap.entries()) {
+    if (cat !== "") orderedGroups.push({ catName: cat, catItems });
+  }
+  const uncatItems = categoryMap.get("") ?? [];
+  if (uncatItems.length > 0) {
+    orderedGroups.push({ catName: "Uncategorised", catItems: uncatItems });
+  }
+
+  let cardIndex = 0;
+
   return (
     <div>
       <div className={`flex items-center gap-2 mb-3 ${config.className}`}>
@@ -357,20 +409,44 @@ function GroupSection({
         </span>
         <span className="text-xs opacity-60">({items.length})</span>
       </div>
-      <div className="space-y-2.5">
-        {items.map((item, i) => (
-          <RoutineCard
-            key={item.routine.id.toString()}
-            item={item}
-            group={groupKey}
-            index={i}
-            onDone={() => onDone(item.routine.id)}
-            onSkip={() => onSkip(item.routine.id)}
-            onUndo={() => onUndo(item.routine.id)}
-            onMarkDone={() => onMarkDone(item.routine.id)}
-            isLogging={loggingIds.has(item.routine.id.toString())}
-          />
-        ))}
+      <div className="space-y-1">
+        {showCategoryLabels
+          ? orderedGroups.map(({ catName, catItems }) => (
+              <div key={catName}>
+                <CategorySubLabel name={catName} />
+                <div className="space-y-2.5 pl-0">
+                  {catItems.map((item) => {
+                    const idx = cardIndex++;
+                    return (
+                      <RoutineCard
+                        key={item.routine.id.toString()}
+                        item={item}
+                        group={groupKey}
+                        index={idx}
+                        onDone={() => onDone(item.routine.id)}
+                        onSkip={() => onSkip(item.routine.id)}
+                        onUndo={() => onUndo(item.routine.id)}
+                        onMarkDone={() => onMarkDone(item.routine.id)}
+                        isLogging={loggingIds.has(item.routine.id.toString())}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          : items.map((item, i) => (
+              <RoutineCard
+                key={item.routine.id.toString()}
+                item={item}
+                group={groupKey}
+                index={i}
+                onDone={() => onDone(item.routine.id)}
+                onSkip={() => onSkip(item.routine.id)}
+                onUndo={() => onUndo(item.routine.id)}
+                onMarkDone={() => onMarkDone(item.routine.id)}
+                isLogging={loggingIds.has(item.routine.id.toString())}
+              />
+            ))}
       </div>
     </div>
   );
@@ -426,7 +502,7 @@ function FrequencyGoalCard({
   const alreadyLoggedToday = logs.some(
     (l) => l.date === today && l.status === "completed",
   );
-  const displayDescription = stripFrequencyMeta(description);
+  const displayDescription = getCleanDescription(description);
 
   // Report completions up to parent section for aggregate summary
   useEffect(() => {
@@ -660,6 +736,31 @@ function FrequencyPeriodSection({
   const aggregateReady = completionMap.size === items.length;
   const aggregateComplete = aggregateReady && totalCompletions >= totalTarget;
 
+  // Group frequency items by category
+  const categoryMap = new Map<string, DailyRoutineStatus[]>();
+  for (const item of items) {
+    const cat = parseCategoryMeta(item.routine.description) ?? "";
+    if (!categoryMap.has(cat)) categoryMap.set(cat, []);
+    categoryMap.get(cat)!.push(item);
+  }
+  const showCategoryLabels =
+    categoryMap.size > 1 ||
+    (categoryMap.size === 1 && categoryMap.keys().next().value !== "");
+
+  const orderedCatGroups: {
+    catName: string;
+    catItems: DailyRoutineStatus[];
+  }[] = [];
+  for (const [cat, catItems] of categoryMap.entries()) {
+    if (cat !== "") orderedCatGroups.push({ catName: cat, catItems });
+  }
+  const uncatItems = categoryMap.get("") ?? [];
+  if (uncatItems.length > 0) {
+    orderedCatGroups.push({ catName: "Uncategorised", catItems: uncatItems });
+  }
+
+  let cardIndex = startIndex;
+
   return (
     <div>
       {/* Section header */}
@@ -711,32 +812,68 @@ function FrequencyPeriodSection({
         )}
       </div>
 
-      {/* Cards */}
-      <div className="space-y-3">
-        {items.map((item, i) => {
-          const freqMeta = parseFrequencyMeta(item.routine.description);
-          if (!freqMeta) return null;
-          return (
-            <FrequencyGoalCard
-              key={item.routine.id.toString()}
-              routineId={item.routine.id}
-              name={item.routine.name}
-              description={item.routine.description}
-              scheduledTime={item.routine.scheduledTime}
-              reminderEnabled={item.routine.reminderEnabled}
-              reminderOffset={item.routine.reminderOffset}
-              count={freqMeta.count}
-              period={freqMeta.period}
-              index={startIndex + i}
-              loggingIds={loggingIds}
-              onLog={onLog}
-              showWeeklyBadge={isWeekly}
-              onLogsLoaded={handleLogsLoaded}
-              weekStart={weekStart}
-            />
-          );
-        })}
-      </div>
+      {/* Cards — with optional category sub-groups */}
+      {showCategoryLabels ? (
+        <div className="space-y-1">
+          {orderedCatGroups.map(({ catName, catItems }) => (
+            <div key={catName}>
+              <CategorySubLabel name={catName} />
+              <div className="space-y-3">
+                {catItems.map((item) => {
+                  const freqMeta = parseFrequencyMeta(item.routine.description);
+                  if (!freqMeta) return null;
+                  const idx = cardIndex++;
+                  return (
+                    <FrequencyGoalCard
+                      key={item.routine.id.toString()}
+                      routineId={item.routine.id}
+                      name={item.routine.name}
+                      description={item.routine.description}
+                      scheduledTime={item.routine.scheduledTime}
+                      reminderEnabled={item.routine.reminderEnabled}
+                      reminderOffset={item.routine.reminderOffset}
+                      count={freqMeta.count}
+                      period={freqMeta.period}
+                      index={idx}
+                      loggingIds={loggingIds}
+                      onLog={onLog}
+                      showWeeklyBadge={isWeekly}
+                      onLogsLoaded={handleLogsLoaded}
+                      weekStart={weekStart}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {items.map((item, i) => {
+            const freqMeta = parseFrequencyMeta(item.routine.description);
+            if (!freqMeta) return null;
+            return (
+              <FrequencyGoalCard
+                key={item.routine.id.toString()}
+                routineId={item.routine.id}
+                name={item.routine.name}
+                description={item.routine.description}
+                scheduledTime={item.routine.scheduledTime}
+                reminderEnabled={item.routine.reminderEnabled}
+                reminderOffset={item.routine.reminderOffset}
+                count={freqMeta.count}
+                period={freqMeta.period}
+                index={startIndex + i}
+                loggingIds={loggingIds}
+                onLog={onLog}
+                showWeeklyBadge={isWeekly}
+                onLogsLoaded={handleLogsLoaded}
+                weekStart={weekStart}
+              />
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
