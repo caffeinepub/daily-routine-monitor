@@ -593,6 +593,166 @@ export function toFlatLogs(
 }
 
 /**
+ * Compute a flat (unweighted) success rate: A = total completions, B = total planned.
+ * Rate = A / B * 100.
+ *
+ * frequencyFilter:
+ *   'daily'  — only isDailyRoutine tasks
+ *   'weekly' — only non-daily tasks
+ *   undefined — all fixed-day tasks
+ */
+export function computeFlatRate(
+  routines: Routine[],
+  logs: FlatLog[],
+  scope: "day" | "week",
+  dateOrDates: string | string[],
+  today: string,
+  frequencyFilter?: "daily" | "weekly",
+): RateResult {
+  const dates =
+    scope === "day"
+      ? [dateOrDates as string]
+      : (dateOrDates as string[]).filter((d) => d <= today);
+
+  // Filter routines by frequency type if requested
+  const filteredRoutines = routines.filter((r) => {
+    if (isFrequencyRoutine(r)) return false; // flat rate only considers fixed-day routines
+    if (frequencyFilter === "daily") return isDailyRoutine(r);
+    if (frequencyFilter === "weekly") return !isDailyRoutine(r);
+    return true;
+  });
+
+  let planned = 0;
+  let completions = 0;
+
+  for (const dateStr of dates) {
+    const dow = getDayOfWeekForDate(dateStr);
+    for (const r of filteredRoutines) {
+      if (!r.repeatDays.map(Number).includes(dow)) continue;
+      planned++;
+      const completed = logs.some(
+        (l) =>
+          l.routineId === r.id.toString() &&
+          l.date === dateStr &&
+          l.status === "completed",
+      );
+      if (completed) completions++;
+    }
+  }
+
+  if (planned === 0) return { completions: 0, planned: 0, rate: null };
+  return {
+    completions,
+    planned,
+    rate: Math.round((completions / planned) * 100),
+  };
+}
+
+/**
+ * Compute flat daily rates for each day in the current week.
+ * frequencyFilter: same as computeFlatRate.
+ */
+export function computeFlatDailyRatesForWeek(
+  routines: Routine[],
+  logs: FlatLog[],
+  weekDates: string[],
+  today: string,
+  frequencyFilter?: "daily" | "weekly",
+): Array<{
+  dateStr: string;
+  rate: number | null;
+  completions: number;
+  planned: number;
+}> {
+  return weekDates.map((dateStr) => {
+    if (dateStr > today)
+      return { dateStr, rate: null, completions: 0, planned: 0 };
+    const result = computeFlatRate(
+      routines,
+      logs,
+      "day",
+      dateStr,
+      today,
+      frequencyFilter,
+    );
+    return {
+      dateStr,
+      rate: result.rate,
+      completions: result.completions,
+      planned: result.planned,
+    };
+  });
+}
+
+/**
+ * Compute flat weekly rates for the past N weeks.
+ * frequencyFilter: same as computeFlatRate.
+ */
+export function computeFlatPastNWeeksRates(
+  routines: Routine[],
+  logs: FlatLog[],
+  weekMode: WeekStartMode,
+  n: number,
+  frequencyFilter?: "daily" | "weekly",
+): Array<{
+  weekLabel: string;
+  weekStart: string;
+  rate: number | null;
+  completions: number;
+  planned: number;
+}> {
+  const results: Array<{
+    weekLabel: string;
+    weekStart: string;
+    rate: number | null;
+    completions: number;
+    planned: number;
+  }> = [];
+
+  const today = getTodayString();
+  const currentWeekStart = getWeekStartWithMode(weekMode);
+
+  for (let i = n - 1; i >= 0; i--) {
+    const [cy, cm, cd] = currentWeekStart.split("-").map(Number);
+    const startDate = new Date(cy!, (cm ?? 1) - 1, cd!);
+    startDate.setDate(startDate.getDate() - i * 7);
+    const weekStart = startDate.toISOString().split("T")[0]!;
+
+    const weekDates = getWeekDates(weekStart);
+    const pastDates = weekDates.filter((d) => d <= today);
+
+    const result =
+      pastDates.length > 0
+        ? computeFlatRate(
+            routines,
+            logs,
+            "week",
+            pastDates,
+            today,
+            frequencyFilter,
+          )
+        : { completions: 0, planned: 0, rate: null };
+
+    const [wy, wm, wd] = weekStart.split("-").map(Number);
+    const labelDate = new Date(wy!, (wm ?? 1) - 1, wd!);
+    const weekLabel = labelDate.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
+
+    results.push({
+      weekLabel,
+      weekStart,
+      rate: result.rate,
+      completions: result.completions,
+      planned: result.planned,
+    });
+  }
+
+  return results;
+}
+
+/**
  * Compute weighted average success rate for all categories.
  * Categories with no planned tasks in the period are excluded from the average.
  * Returns null if no categories have any planned tasks.
@@ -626,6 +786,247 @@ export function computeWeightedRate(
 
   if (totalWeight === 0) return null;
   return Math.round(weightedSum / totalWeight);
+}
+
+/**
+ * Compute weighted success rate for all categories, returning a full RateResult
+ * (rate + raw completions + raw planned) for display in the rate pills.
+ *
+ * Rate formula:
+ *   For each category C with weight W:  categoryRate(C) = completions(C) / planned(C)
+ *   weeklyRate = Σ(W * categoryRate(C)) / Σ(W) — i.e. weighted average of per-category A/B.
+ *
+ * When no category weights are configured, falls back to a flat A/B across all tasks.
+ */
+export function computeWeightedRateResult(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryWeights: CategoryWeight[],
+  scope: "day" | "week",
+  dateOrDates: string | string[],
+  today: string,
+): RateResult {
+  // Fallback: flat rate when no weights defined
+  if (categoryWeights.length === 0) {
+    const dates =
+      scope === "day"
+        ? [dateOrDates as string]
+        : (dateOrDates as string[]).filter((d) => d <= today);
+    return computeFlatRate(routines, logs, scope, dates, today);
+  }
+
+  let weightedSum = 0;
+  let totalWeight = 0;
+  let totalCompletions = 0;
+  let totalPlanned = 0;
+
+  for (const cw of categoryWeights) {
+    const result = computeCategoryRate(
+      routines,
+      logs,
+      cw.name,
+      scope,
+      dateOrDates,
+      today,
+    );
+    totalCompletions += result.completions;
+    totalPlanned += result.planned;
+    if (result.planned === 0) continue;
+    weightedSum += cw.weight * (result.rate ?? 0);
+    totalWeight += cw.weight;
+  }
+
+  if (totalWeight === 0 || totalPlanned === 0) {
+    return { completions: totalCompletions, planned: totalPlanned, rate: null };
+  }
+
+  return {
+    completions: totalCompletions,
+    planned: totalPlanned,
+    rate: Math.round(weightedSum / totalWeight),
+  };
+}
+
+/**
+ * Compute weighted weekly success rates for the past N weeks.
+ * Each week's rate is the weighted average of per-category A/B rates.
+ * Falls back to flat A/B when no category weights are configured.
+ */
+export function computeWeightedPastNWeeksRates(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryWeights: CategoryWeight[],
+  weekMode: WeekStartMode,
+  n: number,
+): Array<{
+  weekLabel: string;
+  weekStart: string;
+  rate: number | null;
+  completions: number;
+  planned: number;
+}> {
+  const results: Array<{
+    weekLabel: string;
+    weekStart: string;
+    rate: number | null;
+    completions: number;
+    planned: number;
+  }> = [];
+
+  const today = getTodayString();
+  const currentWeekStart = getWeekStartWithMode(weekMode);
+
+  for (let i = n - 1; i >= 0; i--) {
+    const [cy, cm, cd] = currentWeekStart.split("-").map(Number);
+    const startDate = new Date(cy!, (cm ?? 1) - 1, cd!);
+    startDate.setDate(startDate.getDate() - i * 7);
+    const weekStart = startDate.toISOString().split("T")[0]!;
+
+    const weekDates = getWeekDates(weekStart);
+    const pastDates = weekDates.filter((d) => d <= today);
+
+    const result =
+      pastDates.length > 0
+        ? computeWeightedRateResult(
+            routines,
+            logs,
+            categoryWeights,
+            "week",
+            pastDates,
+            today,
+          )
+        : { completions: 0, planned: 0, rate: null };
+
+    const [wy, wm, wd] = weekStart.split("-").map(Number);
+    const labelDate = new Date(wy!, (wm ?? 1) - 1, wd!);
+    const weekLabel = labelDate.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
+
+    results.push({
+      weekLabel,
+      weekStart,
+      rate: result.rate,
+      completions: result.completions,
+      planned: result.planned,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Compute weighted Daily success rate using ONLY daily tasks (isDailyRoutine = true).
+ *
+ * Rules:
+ * - Only fixed-day routines scheduled every single day are considered.
+ * - Only categories that have at least one daily task scheduled on `today` participate.
+ * - Those categories' weights are re-normalised proportionally so they sum to 100
+ *   among themselves (e.g. if only categories A:40 and B:20 have daily tasks,
+ *   they become 67% and 33% respectively).
+ * - Returns { rate, completions, planned, categoryCount }.
+ */
+export interface DailyWeightedRateResult {
+  rate: number | null;
+  completions: number;
+  planned: number;
+  categoryCount: number;
+}
+
+export function computeDailyCategoryWeightedRate(
+  routines: Routine[],
+  logs: FlatLog[],
+  categoryWeights: CategoryWeight[],
+  today: string,
+): DailyWeightedRateResult {
+  // Only daily fixed-day routines
+  const dailyRoutines = routines.filter(
+    (r) => !isFrequencyRoutine(r) && isDailyRoutine(r),
+  );
+
+  if (dailyRoutines.length === 0) {
+    return { rate: null, completions: 0, planned: 0, categoryCount: 0 };
+  }
+
+  const dow = getDayOfWeekForDate(today);
+
+  // Determine which categories have daily tasks scheduled today
+  const activeCategoryNames = new Set<string>();
+  for (const r of dailyRoutines) {
+    if (!r.repeatDays.map(Number).includes(dow)) continue;
+    const cat = parseCategoryMeta(r.description) ?? "Uncategorised";
+    activeCategoryNames.add(cat);
+  }
+
+  if (activeCategoryNames.size === 0) {
+    return { rate: null, completions: 0, planned: 0, categoryCount: 0 };
+  }
+
+  // Build active weight list — only categories that have daily tasks today
+  const activeWeights = categoryWeights.filter((cw) =>
+    activeCategoryNames.has(cw.name),
+  );
+
+  // Include "Uncategorised" if present among active categories but not in categoryWeights
+  for (const catName of activeCategoryNames) {
+    if (!activeWeights.find((cw) => cw.name === catName)) {
+      // Give it a weight of 0 so it participates but doesn't skew the average;
+      // or treat equal weight if no weights are configured at all.
+      activeWeights.push({ name: catName, weight: 0 });
+    }
+  }
+
+  // Re-normalise weights among active categories
+  const rawTotal = activeWeights.reduce((sum, cw) => sum + cw.weight, 0);
+  const normalisedWeights: CategoryWeight[] =
+    rawTotal > 0
+      ? activeWeights.map((cw) => ({
+          name: cw.name,
+          weight: (cw.weight / rawTotal) * 100,
+        }))
+      : activeWeights.map((cw) => ({
+          name: cw.name,
+          weight: 100 / activeWeights.length,
+        }));
+
+  // Compute per-category rate for today, weighted
+  let weightedSum = 0;
+  let totalWeight = 0;
+  let totalCompletions = 0;
+  let totalPlanned = 0;
+
+  for (const cw of normalisedWeights) {
+    const result = computeCategoryRate(
+      dailyRoutines,
+      logs,
+      cw.name,
+      "day",
+      today,
+      today,
+    );
+    if (result.planned === 0) continue;
+    weightedSum += cw.weight * (result.rate ?? 0);
+    totalWeight += cw.weight;
+    totalCompletions += result.completions;
+    totalPlanned += result.planned;
+  }
+
+  if (totalWeight === 0 || totalPlanned === 0) {
+    return {
+      rate: null,
+      completions: totalCompletions,
+      planned: totalPlanned,
+      categoryCount: normalisedWeights.length,
+    };
+  }
+
+  return {
+    rate: Math.round(weightedSum / totalWeight),
+    completions: totalCompletions,
+    planned: totalPlanned,
+    categoryCount: normalisedWeights.length,
+  };
 }
 
 /**

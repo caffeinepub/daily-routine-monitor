@@ -41,10 +41,12 @@ import {
   classifyRoutine,
   computeCategoryPastNWeeksRates,
   computeCategoryWeeklyRates,
-  computeDailyWeightedRatesForWeek,
-  computePastNWeeksWeightedRates,
+  computeDailyCategoryWeightedRate,
+  computeFlatDailyRatesForWeek,
+  computeFlatRate,
   computeTaskWeeklyRates,
-  computeWeightedRate,
+  computeWeightedPastNWeeksRates,
+  computeWeightedRateResult,
   countCompletionsInPeriod,
   countPlannedForDate,
   formatDateFull,
@@ -593,10 +595,14 @@ function getRateColor(rate: number | null): string {
 function RatePill({
   label,
   rate,
+  completions,
+  planned,
   ocid,
 }: {
   label: string;
   rate: number | null;
+  completions?: number;
+  planned?: number;
   ocid: string;
 }) {
   const color = getRateColor(rate);
@@ -622,6 +628,11 @@ function RatePill({
             style={{ width: `${rate}%`, background: color }}
           />
         </div>
+      )}
+      {planned !== undefined && planned > 0 && (
+        <span className="text-[10px] text-muted-foreground mt-0.5">
+          {completions ?? 0} / {planned} done
+        </span>
       )}
     </div>
   );
@@ -780,47 +791,41 @@ function WeightedSuccessPanel({
   const logs = useMemo(() => toFlatLogs(rawLogs), [rawLogs]);
   const weekDates = useMemo(() => getWeekDates(weekStart), [weekStart]);
 
-  // Overall weighted rates for today and current week
-  const weeklyRate = useMemo(() => {
-    if (categoryWeights.length === 0) return null;
-    return computeWeightedRate(
+  // Weekly Success Rate: weighted average of per-category A/B rates for the current week.
+  // For each category: categoryRate = completions / planned (this week).
+  // weeklyRate = Σ(weight * categoryRate) / Σ(weight).
+  // Falls back to flat A/B when no category weights are configured.
+  const weeklyRateResult = useMemo(() => {
+    const pastDates = weekDates.filter((d) => d <= today);
+    if (pastDates.length === 0) return null;
+    return computeWeightedRateResult(
       fixedRoutines,
       logs,
       categoryWeights,
       "week",
-      weekDates,
+      pastDates,
       today,
     );
   }, [fixedRoutines, logs, categoryWeights, weekDates, today]);
 
-  const dailyRate = useMemo(() => {
-    if (categoryWeights.length === 0) return null;
-    return computeWeightedRate(
+  // Daily Success Rate: weighted by category, but ONLY daily tasks + their categories
+  const dailyRateResult = useMemo(() => {
+    return computeDailyCategoryWeightedRate(
       fixedRoutines,
       logs,
       categoryWeights,
-      "day",
-      today,
       today,
     );
   }, [fixedRoutines, logs, categoryWeights, today]);
 
-  // Daily weighted rates for the current week bar chart
+  // Bar chart: flat A/B per day across all tasks
   const dailyBarData = useMemo(() => {
-    if (categoryWeights.length === 0) return null;
-    return computeDailyWeightedRatesForWeek(
-      fixedRoutines,
-      logs,
-      categoryWeights,
-      weekDates,
-      today,
-    );
-  }, [fixedRoutines, logs, categoryWeights, weekDates, today]);
+    return computeFlatDailyRatesForWeek(fixedRoutines, logs, weekDates, today);
+  }, [fixedRoutines, logs, weekDates, today]);
 
-  // Past N weeks overall rates
+  // Past N weeks: weighted A/B per week (mirrors Weekly Success Rate calculation)
   const pastNWeeksData = useMemo(() => {
-    if (categoryWeights.length === 0) return null;
-    return computePastNWeeksWeightedRates(
+    return computeWeightedPastNWeeksRates(
       fixedRoutines,
       logs,
       categoryWeights,
@@ -1026,42 +1031,26 @@ function WeightedSuccessPanel({
                 </div>
               )}
 
-              {/* Rate pills */}
-              {!hasWeights ? (
-                <div
-                  className="rounded-xl border border-border/50 p-4 text-center space-y-2"
-                  style={{ background: "oklch(0.155 0.01 255)" }}
-                  data-ocid="success_rates.setup_prompt.card"
-                >
-                  <BarChart2
-                    className="w-5 h-5 mx-auto"
-                    style={{ color: "oklch(0.55 0.012 255)" }}
-                  />
-                  <p className="text-sm text-muted-foreground">
-                    Set up category weights in{" "}
-                    <span className="font-semibold text-foreground">
-                      Routines → Manage Categories
-                    </span>{" "}
-                    to see weighted success rates.
-                  </p>
-                </div>
-              ) : (
-                <div className="flex gap-3">
-                  <RatePill
-                    label="Weekly Success"
-                    rate={weeklyRate}
-                    ocid="success_rates.weekly_rate.card"
-                  />
-                  <RatePill
-                    label="Today's Success"
-                    rate={dailyRate}
-                    ocid="success_rates.daily_rate.card"
-                  />
-                </div>
-              )}
+              {/* Rate pills — always shown, no category weight setup required */}
+              <div className="flex gap-3">
+                <RatePill
+                  label="Weekly Success"
+                  rate={weeklyRateResult?.rate ?? null}
+                  completions={weeklyRateResult?.completions}
+                  planned={weeklyRateResult?.planned}
+                  ocid="success_rates.weekly_rate.card"
+                />
+                <RatePill
+                  label="Daily Success (Today)"
+                  rate={dailyRateResult.rate}
+                  completions={dailyRateResult.completions}
+                  planned={dailyRateResult.planned}
+                  ocid="success_rates.daily_rate.card"
+                />
+              </div>
 
               {/* Current week bar chart */}
-              {hasWeights && dailyBarData && (
+              {dailyBarData.length > 0 && (
                 <WeekBarChart
                   title="Daily Success — This Week"
                   bars={weekDates.map((dateStr) => {
@@ -1083,9 +1072,9 @@ function WeightedSuccessPanel({
               )}
 
               {/* Past N weeks bar chart */}
-              {hasWeights && pastNWeeksData && pastNWeeksData.length > 1 && (
+              {pastNWeeksData.length > 1 && (
                 <WeekBarChart
-                  title={`Past ${nWeeks} Weeks — Weighted Success`}
+                  title={`Past ${nWeeks} Weeks — Overall Success`}
                   bars={pastNWeeksData.map((w, i) => ({
                     label: w.weekLabel,
                     rate: w.rate,
@@ -1119,46 +1108,33 @@ function WeightedSuccessPanel({
               transition={{ duration: 0.2 }}
               className="space-y-4"
             >
-              {!hasWeights ? (
+              <>
+                {/* Category cards */}
                 <div
-                  className="rounded-xl border border-border/50 p-4 text-center space-y-2"
-                  style={{ background: "oklch(0.155 0.01 255)" }}
+                  className="space-y-2"
+                  data-ocid="success_rates.categories.list"
                 >
-                  <p className="text-sm text-muted-foreground">
-                    Configure category weights in{" "}
-                    <span className="font-semibold text-foreground">
-                      Routines → Manage Categories
-                    </span>{" "}
-                    to see per-category success rates.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  {/* Category cards */}
-                  <div
-                    className="space-y-2"
-                    data-ocid="success_rates.categories.list"
-                  >
-                    {categoryRates.map((cat, i) => {
-                      const color = getRateColor(cat.rate);
-                      return (
-                        <button
-                          key={cat.name}
-                          type="button"
-                          onClick={() => {
-                            setSelectedCategory(cat.name);
-                            setLevel("tasks");
-                          }}
-                          className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-border/50 hover:border-foreground/20 transition-colors text-left"
-                          style={{ background: "oklch(0.155 0.01 255)" }}
-                          data-ocid={`success_rates.category.item.${i + 1}`}
-                        >
-                          {/* Category name + weight badge */}
-                          <div className="flex-1 min-w-0 space-y-1.5">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm font-semibold text-foreground truncate">
-                                {cat.name}
-                              </span>
+                  {categoryRates.map((cat, i) => {
+                    const color = getRateColor(cat.rate);
+                    return (
+                      <button
+                        key={cat.name}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCategory(cat.name);
+                          setLevel("tasks");
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-border/50 hover:border-foreground/20 transition-colors text-left"
+                        style={{ background: "oklch(0.155 0.01 255)" }}
+                        data-ocid={`success_rates.category.item.${i + 1}`}
+                      >
+                        {/* Category name + weight badge */}
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-semibold text-foreground truncate">
+                              {cat.name}
+                            </span>
+                            {hasWeights && (
                               <span
                                 className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
                                 style={{
@@ -1168,58 +1144,58 @@ function WeightedSuccessPanel({
                               >
                                 {cat.weight}%
                               </span>
-                            </div>
-                            {/* Progress bar */}
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                                <div
-                                  className="h-full rounded-full transition-all duration-700"
-                                  style={{
-                                    width: `${cat.rate ?? 0}%`,
-                                    background: color,
-                                  }}
-                                />
-                              </div>
-                              <span
-                                className="text-xs font-semibold shrink-0 w-8 text-right"
-                                style={{ color }}
-                              >
-                                {cat.rate !== null ? `${cat.rate}%` : "—"}
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-muted-foreground">
-                              {cat.completions} / {cat.planned} completions this
-                              week
-                            </p>
+                            )}
                           </div>
-                          <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
-                        </button>
-                      );
-                    })}
-                    {categoryRates.length === 0 && (
-                      <p
-                        className="text-sm text-muted-foreground text-center py-4"
-                        data-ocid="success_rates.categories.empty_state"
-                      >
-                        No category data for this week.
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Past N weeks chart per-category totals */}
-                  {pastNWeeksData && pastNWeeksData.length > 1 && (
-                    <WeekBarChart
-                      title={`Past ${nWeeks} Weeks — Overall Weighted`}
-                      bars={pastNWeeksData.map((w, i) => ({
-                        label: w.weekLabel,
-                        rate: w.rate,
-                        isHighlighted: i === pastNWeeksData.length - 1,
-                        isEmpty: w.rate === null,
-                      }))}
-                    />
+                          {/* Progress bar */}
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all duration-700"
+                                style={{
+                                  width: `${cat.rate ?? 0}%`,
+                                  background: color,
+                                }}
+                              />
+                            </div>
+                            <span
+                              className="text-xs font-semibold shrink-0 w-8 text-right"
+                              style={{ color }}
+                            >
+                              {cat.rate !== null ? `${cat.rate}%` : "—"}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            {cat.completions} / {cat.planned} completions this
+                            week
+                          </p>
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                      </button>
+                    );
+                  })}
+                  {categoryRates.length === 0 && (
+                    <p
+                      className="text-sm text-muted-foreground text-center py-4"
+                      data-ocid="success_rates.categories.empty_state"
+                    >
+                      No category data for this week.
+                    </p>
                   )}
-                </>
-              )}
+                </div>
+
+                {/* Past N weeks chart */}
+                {pastNWeeksData.length > 1 && (
+                  <WeekBarChart
+                    title={`Past ${nWeeks} Weeks — Overall Success`}
+                    bars={pastNWeeksData.map((w, i) => ({
+                      label: w.weekLabel,
+                      rate: w.rate,
+                      isHighlighted: i === pastNWeeksData.length - 1,
+                      isEmpty: w.rate === null,
+                    }))}
+                  />
+                )}
+              </>
             </motion.div>
           )}
 
