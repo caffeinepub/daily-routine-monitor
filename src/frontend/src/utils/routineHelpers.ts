@@ -514,6 +514,12 @@ export interface RateResult {
  * Compute the success rate for a specific category.
  * scope='day': only looks at dateOrDates as a single date string
  * scope='week': looks at dateOrDates as an array of week date strings (up to today)
+ *
+ * Planned (B) calculation:
+ *  - Fixed-day routines: each occurrence on a matching day-of-week counts as 1.
+ *  - Frequency routines (e.g. 3×/week): the freqMeta.count is used as the number
+ *    of planned instances for the week (e.g. 3 for 3×/week, 7 for daily). For a
+ *    day-scope, frequency routines are excluded (they have no per-day assignment).
  */
 export function computeCategoryRate(
   routines: Routine[],
@@ -529,8 +535,9 @@ export function computeCategoryRate(
       : (dateOrDates as string[]).filter((d) => d <= today);
 
   let planned = 0;
-  const completedSet = new Set<string>(); // "routineId:date"
+  let completions = 0;
 
+  // ── Fixed-day routines ──────────────────────────────────────────────────────
   for (const dateStr of dates) {
     const dayRoutines = getCategoryTasksForDate(
       routines,
@@ -538,18 +545,12 @@ export function computeCategoryRate(
       dateStr,
     );
     planned += dayRoutines.length;
-    for (const r of dayRoutines) {
-      const key = `${r.id.toString()}:${dateStr}`;
-      completedSet.add(`__check__${key}`);
-    }
   }
 
-  // Count completions from logs
-  let completions = 0;
+  // Count completions for fixed-day routines
   for (const log of logs) {
     if (log.status !== "completed") continue;
     if (!dates.includes(log.date)) continue;
-    // Find if this log belongs to a routine in this category
     const routine = routines.find(
       (r) => r.id.toString() === (log as { routineId?: string }).routineId,
     );
@@ -560,6 +561,31 @@ export function computeCategoryRate(
     const dow = getDayOfWeekForDate(log.date);
     if (!routine.repeatDays.map(Number).includes(dow)) continue;
     completions++;
+  }
+
+  // ── Frequency routines (week scope only) ────────────────────────────────────
+  if (scope === "week") {
+    const freqRoutinesInCategory = routines.filter((r) => {
+      if (!isFrequencyRoutine(r)) return false;
+      const cat = parseCategoryMeta(r.description) ?? "Uncategorised";
+      return cat === categoryName;
+    });
+
+    for (const r of freqRoutinesInCategory) {
+      const freqMeta = parseFrequencyMeta(r.description);
+      if (!freqMeta || freqMeta.period !== "week") continue;
+      // B = the number of times per week the task is planned
+      planned += freqMeta.count;
+      // A = completions logged on any of the week dates
+      const weekCompletions = logs.filter(
+        (l) =>
+          l.status === "completed" &&
+          dates.includes(l.date) &&
+          (l as { routineId?: string }).routineId === r.id.toString(),
+      ).length;
+      // Cap completions at planned to avoid >100% rate
+      completions += Math.min(weekCompletions, freqMeta.count);
+    }
   }
 
   if (planned === 0) return { completions: 0, planned: 0, rate: null };
@@ -597,9 +623,14 @@ export function toFlatLogs(
  * Rate = A / B * 100.
  *
  * frequencyFilter:
- *   'daily'  — only isDailyRoutine tasks
- *   'weekly' — only non-daily tasks
- *   undefined — all fixed-day tasks
+ *   'daily'  — only isDailyRoutine tasks (fixed-day all-7-days; freq 7×/week)
+ *   'weekly' — only non-daily tasks (fixed-day partial-week + freq routines except 7×/week)
+ *   undefined — all tasks (fixed-day + frequency routines)
+ *
+ * For frequency routines (week scope):
+ *   B += freqMeta.count (e.g. 3 for 3×/week, 7 for daily)
+ *   A += completions logged on any week date, capped at freqMeta.count
+ * For day scope, frequency routines are excluded (no per-day assignment).
  */
 export function computeFlatRate(
   routines: Routine[],
@@ -614,9 +645,9 @@ export function computeFlatRate(
       ? [dateOrDates as string]
       : (dateOrDates as string[]).filter((d) => d <= today);
 
-  // Filter routines by frequency type if requested
-  const filteredRoutines = routines.filter((r) => {
-    if (isFrequencyRoutine(r)) return false; // flat rate only considers fixed-day routines
+  // Fixed-day routines
+  const fixedRoutines = routines.filter((r) => {
+    if (isFrequencyRoutine(r)) return false;
     if (frequencyFilter === "daily") return isDailyRoutine(r);
     if (frequencyFilter === "weekly") return !isDailyRoutine(r);
     return true;
@@ -627,7 +658,7 @@ export function computeFlatRate(
 
   for (const dateStr of dates) {
     const dow = getDayOfWeekForDate(dateStr);
-    for (const r of filteredRoutines) {
+    for (const r of fixedRoutines) {
       if (!r.repeatDays.map(Number).includes(dow)) continue;
       planned++;
       const completed = logs.some(
@@ -637,6 +668,30 @@ export function computeFlatRate(
           l.status === "completed",
       );
       if (completed) completions++;
+    }
+  }
+
+  // Frequency routines (week scope only)
+  if (scope === "week") {
+    const freqRoutines = routines.filter((r) => {
+      if (!isFrequencyRoutine(r)) return false;
+      const freqMeta = parseFrequencyMeta(r.description);
+      if (!freqMeta || freqMeta.period !== "week") return false;
+      if (frequencyFilter === "daily") return freqMeta.count === 7;
+      if (frequencyFilter === "weekly") return freqMeta.count !== 7;
+      return true;
+    });
+
+    for (const r of freqRoutines) {
+      const freqMeta = parseFrequencyMeta(r.description)!;
+      planned += freqMeta.count;
+      const weekCompletions = logs.filter(
+        (l) =>
+          l.routineId === r.id.toString() &&
+          dates.includes(l.date) &&
+          l.status === "completed",
+      ).length;
+      completions += Math.min(weekCompletions, freqMeta.count);
     }
   }
 
@@ -1091,6 +1146,10 @@ export function computeCategoryWeeklyRates(
 
 /**
  * Compute per-task rates for a category for the current week.
+ *
+ * For fixed-day routines: planned = number of scheduled occurrences in pastDates.
+ * For frequency routines (e.g. 3×/week): planned = freqMeta.count (e.g. 3),
+ *   completions = logs in pastDates, capped at planned.
  */
 export function computeTaskWeeklyRates(
   routines: Routine[],
@@ -1106,7 +1165,6 @@ export function computeTaskWeeklyRates(
 }> {
   const pastDates = weekDates.filter((d) => d <= today);
   const categoryRoutines = routines.filter((r) => {
-    if (isFrequencyRoutine(r)) return false;
     const cat = parseCategoryMeta(r.description) ?? "Uncategorised";
     return cat === categoryName;
   });
@@ -1114,18 +1172,34 @@ export function computeTaskWeeklyRates(
   return categoryRoutines.map((routine) => {
     let planned = 0;
     let completions = 0;
-    for (const dateStr of pastDates) {
-      const dow = getDayOfWeekForDate(dateStr);
-      if (!routine.repeatDays.map(Number).includes(dow)) continue;
-      planned++;
-      const completed = logs.some(
-        (l) =>
-          l.routineId === routine.id.toString() &&
-          l.date === dateStr &&
-          l.status === "completed",
-      );
-      if (completed) completions++;
+
+    if (isFrequencyRoutine(routine)) {
+      const freqMeta = parseFrequencyMeta(routine.description);
+      if (freqMeta && freqMeta.period === "week") {
+        planned = freqMeta.count;
+        const weekCompletions = logs.filter(
+          (l) =>
+            l.routineId === routine.id.toString() &&
+            pastDates.includes(l.date) &&
+            l.status === "completed",
+        ).length;
+        completions = Math.min(weekCompletions, freqMeta.count);
+      }
+    } else {
+      for (const dateStr of pastDates) {
+        const dow = getDayOfWeekForDate(dateStr);
+        if (!routine.repeatDays.map(Number).includes(dow)) continue;
+        planned++;
+        const completed = logs.some(
+          (l) =>
+            l.routineId === routine.id.toString() &&
+            l.date === dateStr &&
+            l.status === "completed",
+        );
+        if (completed) completions++;
+      }
     }
+
     const rate =
       planned === 0 ? null : Math.round((completions / planned) * 100);
     return { routine, completions, planned, rate };

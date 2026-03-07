@@ -3,14 +3,22 @@ import { useState } from "react";
 import Layout from "./components/app/Layout";
 import { useInternetIdentity } from "./hooks/useInternetIdentity";
 import { useGetCallerUserProfile } from "./hooks/useQueries";
+import CategoriesPage from "./pages/CategoriesPage";
 import DashboardPage from "./pages/DashboardPage";
 import HistoryPage from "./pages/HistoryPage";
+import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import ProfileSetupPage from "./pages/ProfileSetupPage";
 import RoutinesPage from "./pages/RoutinesPage";
 import SettingsPage from "./pages/SettingsPage";
 
-type Page = "dashboard" | "routines" | "history" | "settings";
+type Page =
+  | "home"
+  | "dashboard"
+  | "categories"
+  | "tasks"
+  | "history"
+  | "settings";
 
 function AppContent() {
   const { identity } = useInternetIdentity();
@@ -22,7 +30,7 @@ function AppContent() {
     isFetched: profileFetched,
   } = useGetCallerUserProfile();
 
-  const [currentPage, setCurrentPage] = useState<Page>("dashboard");
+  const [currentPage, setCurrentPage] = useState<Page>("home");
 
   // Not authenticated — show login
   if (!isAuthenticated) {
@@ -81,26 +89,25 @@ function AppContent() {
 
   const renderPage = () => {
     switch (currentPage) {
+      case "home":
+        return <LandingPage onNavigate={setCurrentPage} />;
       case "dashboard":
         return (
           <DashboardPage
             userName={userName}
-            onNavigateToRoutines={() => setCurrentPage("routines")}
+            onNavigateToRoutines={() => setCurrentPage("tasks")}
           />
         );
-      case "routines":
+      case "categories":
+        return <CategoriesPage />;
+      case "tasks":
         return <RoutinesPage />;
       case "history":
         return <HistoryPage />;
       case "settings":
         return <SettingsPage />;
       default:
-        return (
-          <DashboardPage
-            userName={userName}
-            onNavigateToRoutines={() => setCurrentPage("routines")}
-          />
-        );
+        return <LandingPage onNavigate={setCurrentPage} />;
     }
   };
 

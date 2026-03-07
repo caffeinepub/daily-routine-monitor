@@ -2,11 +2,13 @@ import { Button } from "@/components/ui/button";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   History,
+  Home,
   LayoutDashboard,
   ListChecks,
   LogOut,
   Menu,
   Settings,
+  Tag,
   User,
   X,
   Zap,
@@ -15,7 +17,13 @@ import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
 import { useInternetIdentity } from "../../hooks/useInternetIdentity";
 
-type Page = "dashboard" | "routines" | "history" | "settings";
+type Page =
+  | "home"
+  | "dashboard"
+  | "categories"
+  | "tasks"
+  | "history"
+  | "settings";
 
 interface LayoutProps {
   currentPage: Page;
@@ -26,16 +34,28 @@ interface LayoutProps {
 
 const navItems = [
   {
+    id: "home" as Page,
+    label: "Home",
+    icon: Home,
+    ocid: "nav.home.link",
+  },
+  {
     id: "dashboard" as Page,
     label: "Dashboard",
     icon: LayoutDashboard,
     ocid: "nav.dashboard.link",
   },
   {
-    id: "routines" as Page,
-    label: "Routines",
+    id: "categories" as Page,
+    label: "Categories",
+    icon: Tag,
+    ocid: "nav.categories.link",
+  },
+  {
+    id: "tasks" as Page,
+    label: "Tasks",
     icon: ListChecks,
-    ocid: "nav.routines.link",
+    ocid: "nav.tasks.link",
   },
   {
     id: "history" as Page,
@@ -51,8 +71,13 @@ const navItems = [
   },
 ];
 
-// Bottom nav shows only the first 3 items to avoid crowding on small screens
-const bottomNavItems = navItems.slice(0, 3);
+// Mobile bottom nav: home, dashboard, tasks, history (4 most used)
+const bottomNavItems = [
+  navItems[0]!, // home
+  navItems[1]!, // dashboard
+  navItems[3]!, // tasks
+  navItems[4]!, // history
+];
 
 export default function Layout({
   currentPage,

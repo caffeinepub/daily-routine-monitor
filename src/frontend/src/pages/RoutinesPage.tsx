@@ -109,11 +109,13 @@ function saveCategories(cats: string[]): void {
 // ─── Form State ───────────────────────────────────────────────────────────────
 
 type ScheduleMode = "specific" | "flexible";
+type TaskType = "daily" | "nondaily";
 
 interface RoutineFormData {
   name: string;
   description: string;
   scheduledTime: string;
+  taskType: TaskType;
   scheduleMode: ScheduleMode;
   // specific days mode
   repeatDays: number[];
@@ -132,6 +134,7 @@ const defaultForm: RoutineFormData = {
   name: "",
   description: "",
   scheduledTime: "08:00",
+  taskType: "nondaily",
   scheduleMode: "specific",
   repeatDays: [1, 2, 3, 4, 5],
   freqCount: 3,
@@ -150,6 +153,19 @@ const PRESETS = [
   { label: "Tue/Thu", days: [2, 4] },
 ];
 
+function inferTaskType(routine: Routine): TaskType {
+  const freqMeta = parseFrequencyMeta(routine.description);
+  if (freqMeta !== null) {
+    // Flexible freq with 7×/week counts as daily
+    return freqMeta.count === 7 && freqMeta.period === "week"
+      ? "daily"
+      : "nondaily";
+  }
+  // Specific days: daily if all 7 days selected
+  const nums = routine.repeatDays.map(Number).sort();
+  return nums.join(",") === "0,1,2,3,4,5,6" ? "daily" : "nondaily";
+}
+
 function formDataFromRoutine(routine: Routine): RoutineFormData {
   const freqMeta = parseFrequencyMeta(routine.description);
   const isFreq = freqMeta !== null;
@@ -161,11 +177,13 @@ function formDataFromRoutine(routine: Routine): RoutineFormData {
       : "minutes";
 
   const category = parseCategoryMeta(routine.description) ?? "";
+  const taskType = inferTaskType(routine);
 
   return {
     name: routine.name,
     description: getCleanDescription(routine.description),
     scheduledTime: routine.scheduledTime,
+    taskType,
     scheduleMode: isFreq ? "flexible" : "specific",
     repeatDays: isFreq ? [0, 1, 2, 3, 4, 5, 6] : routine.repeatDays.map(Number),
     freqCount: freqMeta?.count ?? 3,
@@ -181,6 +199,18 @@ function buildRepeatDaysAndDescription(form: RoutineFormData): {
   repeatDays: bigint[];
   description: string;
 } {
+  // For daily tasks: always specific days mode with all 7 days, no freq prefix
+  if (form.taskType === "daily") {
+    const description = encodeCategoryMeta(
+      form.category,
+      form.description.trim(),
+    );
+    return {
+      repeatDays: [0n, 1n, 2n, 3n, 4n, 5n, 6n],
+      description,
+    };
+  }
+
   let baseDesc: string;
   if (form.scheduleMode === "flexible") {
     baseDesc = encodeFrequencyMeta(
@@ -430,11 +460,11 @@ function RoutineFormDialog({
       >
         <DialogHeader>
           <DialogTitle className="font-display text-xl">
-            {editRoutine ? "Edit Routine" : "New Routine"}
+            {editRoutine ? "Edit Task" : "New Task"}
           </DialogTitle>
           <DialogDescription className="text-muted-foreground text-sm">
             {editRoutine
-              ? "Update your routine details."
+              ? "Update your task details."
               : "Set up a new habit to track."}
           </DialogDescription>
         </DialogHeader>
@@ -469,6 +499,92 @@ function RoutineFormDialog({
                 {errors.name}
               </p>
             )}
+          </div>
+
+          {/* Task Type */}
+          <div className="space-y-2">
+            <Label className="text-sm text-foreground/80">
+              Task Type <span className="text-destructive">*</span>
+            </Label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((p) => ({
+                    ...p,
+                    taskType: "daily",
+                    scheduleMode: "specific",
+                    repeatDays: [0, 1, 2, 3, 4, 5, 6],
+                  }))
+                }
+                className={`flex flex-col items-start gap-1 p-3 rounded-lg border text-left transition-all ${
+                  form.taskType === "daily"
+                    ? "border-transparent"
+                    : "border-border text-muted-foreground hover:border-foreground/20 hover:text-foreground"
+                }`}
+                style={
+                  form.taskType === "daily"
+                    ? {
+                        background: "oklch(0.78 0.14 72 / 0.12)",
+                        borderColor: "oklch(0.78 0.14 72 / 0.5)",
+                      }
+                    : {}
+                }
+                data-ocid="routine.task_type.daily.toggle"
+              >
+                <span
+                  className="text-xs font-bold"
+                  style={
+                    form.taskType === "daily"
+                      ? { color: "oklch(0.78 0.14 72)" }
+                      : {}
+                  }
+                >
+                  Daily Task
+                </span>
+                <span className="text-[10px] leading-tight">
+                  Done every day, 7 days a week
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((p) => ({
+                    ...p,
+                    taskType: "nondaily",
+                    repeatDays: [1, 2, 3, 4, 5],
+                  }))
+                }
+                className={`flex flex-col items-start gap-1 p-3 rounded-lg border text-left transition-all ${
+                  form.taskType === "nondaily"
+                    ? "border-transparent"
+                    : "border-border text-muted-foreground hover:border-foreground/20 hover:text-foreground"
+                }`}
+                style={
+                  form.taskType === "nondaily"
+                    ? {
+                        background: "oklch(0.72 0.14 280 / 0.1)",
+                        borderColor: "oklch(0.72 0.14 280 / 0.5)",
+                      }
+                    : {}
+                }
+                data-ocid="routine.task_type.nondaily.toggle"
+              >
+                <span
+                  className="text-xs font-bold"
+                  style={
+                    form.taskType === "nondaily"
+                      ? { color: "oklch(0.72 0.14 280)" }
+                      : {}
+                  }
+                >
+                  Non-daily Task
+                </span>
+                <span className="text-[10px] leading-tight">
+                  Specific days or N times per week
+                </span>
+              </button>
+            </div>
           </div>
 
           {/* Category */}
@@ -528,8 +644,23 @@ function RoutineFormDialog({
             </div>
           </div>
 
-          {/* Schedule Type Toggle */}
-          <div className="space-y-3">
+          {/* Schedule Type Toggle — only for non-daily tasks */}
+          {form.taskType === "daily" && (
+            <div
+              className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-xs"
+              style={{
+                background: "oklch(0.78 0.14 72 / 0.08)",
+                border: "1px solid oklch(0.78 0.14 72 / 0.2)",
+                color: "oklch(0.78 0.14 72)",
+              }}
+            >
+              <CalendarDays className="w-3.5 h-3.5 shrink-0" />
+              Daily tasks are automatically scheduled every day (all 7 days).
+            </div>
+          )}
+          <div
+            className={`space-y-3 ${form.taskType === "daily" ? "hidden" : ""}`}
+          >
             <Label className="text-sm text-foreground/80">Schedule type</Label>
             <div className="flex gap-2 p-1 rounded-lg bg-background border border-border">
               <button
@@ -695,6 +826,7 @@ function RoutineFormDialog({
               </div>
             )}
           </div>
+          {/* end nondaily schedule wrapper */}
 
           {/* Reminder Section */}
           <div
@@ -1561,6 +1693,14 @@ function RoutineRow({
   const displayDescription = getCleanDescription(routine.description);
   const category = parseCategoryMeta(routine.description);
   const isUncategorised = !category;
+  // Determine if this is a "Daily" or "Non-daily" task for badge display
+  const isDaily = (() => {
+    if (isFreq && freqMeta) {
+      return freqMeta.count === 7 && freqMeta.period === "week";
+    }
+    const nums = routine.repeatDays.map(Number).sort();
+    return nums.join(",") === "0,1,2,3,4,5,6";
+  })();
 
   return (
     <motion.div
@@ -1600,6 +1740,24 @@ function RoutineRow({
           <h3 className="font-semibold text-sm text-foreground truncate">
             {routine.name}
           </h3>
+          {/* Daily / Non-daily badge */}
+          <span
+            className="inline-flex items-center text-[9px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
+            style={
+              isDaily
+                ? {
+                    background: "oklch(0.78 0.14 72 / 0.15)",
+                    color: "oklch(0.78 0.14 72)",
+                  }
+                : {
+                    background: "oklch(0.14 0.01 260)",
+                    color: "oklch(0.55 0.01 260)",
+                    border: "1px solid oklch(0.28 0.015 255)",
+                  }
+            }
+          >
+            {isDaily ? "Daily" : "Non-daily"}
+          </span>
           {category && (
             <span
               className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0"
@@ -2061,7 +2219,7 @@ export default function RoutinesPage() {
   let globalIndex = 0;
 
   return (
-    <div className="min-h-screen pb-20 md:pb-8" data-ocid="routines.section">
+    <div className="min-h-screen pb-20 md:pb-8" data-ocid="tasks.section">
       {/* Header */}
       <div
         className="px-4 md:px-8 py-6 border-b border-border"
@@ -2073,24 +2231,14 @@ export default function RoutinesPage() {
         <div className="max-w-3xl mx-auto flex items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-display font-bold text-foreground">
-              My Routines
+              Tasks
             </h1>
             <p className="text-muted-foreground text-sm mt-0.5">
-              {routines.length} routine{routines.length !== 1 ? "s" : ""}{" "}
+              {routines.length} task{routines.length !== 1 ? "s" : ""}{" "}
               configured
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowManageCategories(true)}
-              className="gap-1.5 text-muted-foreground hover:text-foreground text-xs"
-              data-ocid="categories.open_modal_button"
-            >
-              <Settings2 className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Manage Categories</span>
-            </Button>
             <Button
               onClick={() => setShowForm(true)}
               className="gap-1.5 font-semibold"
@@ -2101,7 +2249,7 @@ export default function RoutinesPage() {
               data-ocid="routine.add_button"
             >
               <Plus className="w-4 h-4" />
-              <span className="hidden sm:inline">Add Routine</span>
+              <span className="hidden sm:inline">Add Task</span>
               <span className="sm:hidden">Add</span>
             </Button>
           </div>
@@ -2133,10 +2281,10 @@ export default function RoutinesPage() {
               />
             </div>
             <h2 className="text-xl font-display font-bold text-foreground mb-2">
-              No routines yet
+              No tasks yet
             </h2>
             <p className="text-muted-foreground text-sm mb-6 max-w-xs">
-              Create your first routine to start building powerful daily habits.
+              Create your first task to start building powerful daily habits.
             </p>
             <Button
               onClick={() => setShowForm(true)}
@@ -2148,7 +2296,7 @@ export default function RoutinesPage() {
               data-ocid="routine.add_button"
             >
               <Plus className="w-4 h-4" />
-              Create first routine
+              Create first task
             </Button>
           </motion.div>
         ) : (
