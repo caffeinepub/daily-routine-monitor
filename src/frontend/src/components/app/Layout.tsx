@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  Bell,
   History,
   Home,
   LayoutDashboard,
@@ -23,7 +24,8 @@ type Page =
   | "categories"
   | "tasks"
   | "history"
-  | "settings";
+  | "settings"
+  | "timer";
 
 interface LayoutProps {
   currentPage: Page;
@@ -64,6 +66,12 @@ const navItems = [
     ocid: "nav.history.link",
   },
   {
+    id: "timer" as Page,
+    label: "Bell Timer",
+    icon: Bell,
+    ocid: "nav.timer.link",
+  },
+  {
     id: "settings" as Page,
     label: "Settings",
     icon: Settings,
@@ -71,12 +79,12 @@ const navItems = [
   },
 ];
 
-// Mobile bottom nav: home, dashboard, tasks, history (4 most used)
+// Mobile bottom nav: home, dashboard, tasks, timer (4 most used)
 const bottomNavItems = [
   navItems[0]!, // home
   navItems[1]!, // dashboard
   navItems[3]!, // tasks
-  navItems[4]!, // history
+  navItems[5]!, // timer
 ];
 
 export default function Layout({

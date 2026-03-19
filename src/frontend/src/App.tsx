@@ -3,6 +3,7 @@ import { useState } from "react";
 import Layout from "./components/app/Layout";
 import { useInternetIdentity } from "./hooks/useInternetIdentity";
 import { useGetCallerUserProfile } from "./hooks/useQueries";
+import BellTimerPage from "./pages/BellTimerPage";
 import CategoriesPage from "./pages/CategoriesPage";
 import DashboardPage from "./pages/DashboardPage";
 import HistoryPage from "./pages/HistoryPage";
@@ -18,7 +19,8 @@ type Page =
   | "categories"
   | "tasks"
   | "history"
-  | "settings";
+  | "settings"
+  | "timer";
 
 function AppContent() {
   const { identity } = useInternetIdentity();
@@ -106,6 +108,8 @@ function AppContent() {
         return <HistoryPage />;
       case "settings":
         return <SettingsPage />;
+      case "timer":
+        return <BellTimerPage />;
       default:
         return <LandingPage onNavigate={setCurrentPage} />;
     }
