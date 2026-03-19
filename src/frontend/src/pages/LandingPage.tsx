@@ -782,6 +782,8 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
                   desc: "On track — excellent progress",
                   color: "oklch(0.72 0.16 150)",
                   bg: "oklch(0.72 0.16 150 / 0.08)",
+                  bgAlpha: "oklch(0.72 0.16 150 / 0.15)",
+                  borderAlpha: "oklch(0.72 0.16 150 / 0.3)",
                 },
                 {
                   range: "40–79%",
@@ -789,6 +791,8 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
                   desc: "Moderate — room for improvement",
                   color: "oklch(0.78 0.14 72)",
                   bg: "oklch(0.78 0.14 72 / 0.06)",
+                  bgAlpha: "oklch(0.78 0.14 72 / 0.15)",
+                  borderAlpha: "oklch(0.78 0.14 72 / 0.3)",
                 },
                 {
                   range: "< 40%",
@@ -796,6 +800,8 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
                   desc: "Needs attention — below target",
                   color: "oklch(0.65 0.2 28)",
                   bg: "oklch(0.65 0.2 28 / 0.06)",
+                  bgAlpha: "oklch(0.65 0.2 28 / 0.15)",
+                  borderAlpha: "oklch(0.65 0.2 28 / 0.3)",
                 },
               ].map((row, i) => (
                 <div
@@ -813,9 +819,9 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
                   <Badge
                     className="shrink-0 font-mono text-[11px]"
                     style={{
-                      background: `${row.color} / 0.15`,
+                      background: row.bgAlpha,
                       color: row.color,
-                      border: `1px solid ${row.color} / 0.3`,
+                      border: `1px solid ${row.borderAlpha}`,
                     }}
                   >
                     {row.range}
