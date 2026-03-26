@@ -1,51 +1,25 @@
-// Service Worker for Daily Routine Monitor PWA
-const CACHE_NAME = 'daily-routine-monitor-v1';
+const CACHE_NAME = "mind-your-mind-v1";
+const ASSETS = ["/", "/index.html"];
 
-self.addEventListener('install', (event) => {
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
+  );
   self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
+self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames
-          .filter((name) => name !== CACHE_NAME)
-          .map((name) => caches.delete(name))
-      );
-    })
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    )
   );
   self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
-  // Only handle GET requests
-  if (event.request.method !== 'GET') return;
-
-  // Skip cross-origin requests and API calls
-  const url = new URL(event.request.url);
-  if (url.pathname.startsWith('/api/')) return;
-
+self.addEventListener("fetch", (event) => {
+  if (event.request.method !== "GET") return;
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        // Cache successful responses for static assets
-        if (response.ok && (
-          event.request.url.includes('/assets/') ||
-          event.request.url.endsWith('.js') ||
-          event.request.url.endsWith('.css') ||
-          event.request.url.endsWith('.png') ||
-          event.request.url.endsWith('.ico')
-        )) {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
-        }
-        return response;
-      })
-      .catch(() => {
-        return caches.match(event.request);
-      })
+    caches.match(event.request).then((cached) => cached || fetch(event.request))
   );
 });

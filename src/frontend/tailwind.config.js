@@ -10,15 +10,12 @@ export default {
     container: {
       center: true,
       padding: "2rem",
-      screens: {
-        "2xl": "1400px",
-      },
+      screens: { "2xl": "1400px" },
     },
     extend: {
       fontFamily: {
-        display: ['Bricolage Grotesque', 'Cabinet Grotesk', 'Segoe UI', 'system-ui', 'sans-serif'],
-        body: ['Outfit', 'Plus Jakarta Sans', 'Segoe UI', 'system-ui', 'sans-serif'],
-        mono: ['Geist Mono', 'JetBrains Mono', 'ui-monospace', 'monospace'],
+        display: ["DM Serif Display", "Georgia", "serif"],
+        body: ["DM Sans", "system-ui", "sans-serif"],
       },
       colors: {
         border: "oklch(var(--border))",
@@ -71,21 +68,20 @@ export default {
           border: "oklch(var(--sidebar-border))",
           ring: "oklch(var(--sidebar-ring))",
         },
-        success: {
-          DEFAULT: "oklch(var(--success))",
-          foreground: "oklch(var(--success-foreground))",
+        teal: {
+          50: "oklch(0.97 0.02 195)",
+          100: "oklch(0.93 0.04 195)",
+          200: "oklch(0.86 0.07 195)",
+          300: "oklch(0.76 0.1 195)",
+          400: "oklch(0.65 0.12 195)",
+          500: "oklch(0.55 0.14 195)",
+          600: "oklch(0.46 0.13 195)",
+          700: "oklch(0.38 0.11 195)",
         },
-        warning: {
-          DEFAULT: "oklch(var(--warning))",
-          foreground: "oklch(var(--warning-foreground))",
-        },
-        overdue: {
-          DEFAULT: "oklch(var(--overdue))",
-          foreground: "oklch(var(--overdue-foreground))",
-        },
-        "due-soon": {
-          DEFAULT: "oklch(var(--due-soon))",
-          foreground: "oklch(var(--due-soon-foreground))",
+        sage: {
+          100: "oklch(0.93 0.04 160)",
+          500: "oklch(0.58 0.12 160)",
+          600: "oklch(0.50 0.11 160)",
         },
       },
       borderRadius: {
@@ -94,10 +90,10 @@ export default {
         sm: "calc(var(--radius) - 4px)",
       },
       boxShadow: {
-        xs: "0 1px 2px 0 rgba(0,0,0,0.05)",
-        "glow-amber": "0 0 20px -5px oklch(0.78 0.14 72 / 0.4)",
-        "glow-red": "0 0 20px -5px oklch(0.65 0.2 28 / 0.4)",
-        "card-lift": "0 4px 20px -4px rgba(0,0,0,0.4)",
+        "teal-glow": "0 0 40px -8px oklch(0.55 0.14 195 / 0.35)",
+        "teal-glow-lg": "0 0 60px -10px oklch(0.55 0.14 195 / 0.5)",
+        "card-soft": "0 2px 20px -4px oklch(0.22 0.03 240 / 0.08)",
+        "card-lift": "0 8px 32px -8px oklch(0.22 0.03 240 / 0.12)",
       },
       keyframes: {
         "accordion-down": {
@@ -108,20 +104,10 @@ export default {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
-        "fade-in-up": {
-          from: { opacity: "0", transform: "translateY(8px)" },
-          to: { opacity: "1", transform: "translateY(0)" },
-        },
-        "scale-in": {
-          from: { opacity: "0", transform: "scale(0.95)" },
-          to: { opacity: "1", transform: "scale(1)" },
-        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
-        "fade-in-up": "fade-in-up 0.3s ease-out",
-        "scale-in": "scale-in 0.2s ease-out",
       },
     },
   },

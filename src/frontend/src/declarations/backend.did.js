@@ -13,81 +13,20 @@ export const UserRole = IDL.Variant({
   'user' : IDL.Null,
   'guest' : IDL.Null,
 });
-export const DayOfWeek = IDL.Nat;
-export const ReminderOffset = IDL.Record({
-  'value' : IDL.Nat,
-  'unit' : IDL.Text,
-});
-export const RoutineId = IDL.Nat;
-export const Timestamp = IDL.Int;
-export const Routine = IDL.Record({
-  'id' : RoutineId,
-  'repeatDays' : IDL.Vec(DayOfWeek),
-  'scheduledTime' : IDL.Text,
-  'name' : IDL.Text,
-  'createdAt' : Timestamp,
-  'reminderEnabled' : IDL.Bool,
-  'description' : IDL.Text,
-  'reminderOffset' : ReminderOffset,
-});
 export const UserProfile = IDL.Record({ 'name' : IDL.Text });
-export const DailyRoutineStatus = IDL.Record({
-  'status' : IDL.Opt(IDL.Text),
-  'routine' : Routine,
-});
-export const LogId = IDL.Nat;
-export const RoutineLog = IDL.Record({
-  'id' : LogId,
-  'status' : IDL.Text,
-  'date' : IDL.Text,
-  'routineId' : RoutineId,
-  'loggedAt' : Timestamp,
-});
-export const RoutineUpdate = IDL.Record({
-  'repeatDays' : IDL.Opt(IDL.Vec(DayOfWeek)),
-  'scheduledTime' : IDL.Opt(IDL.Text),
-  'name' : IDL.Opt(IDL.Text),
-  'reminderEnabled' : IDL.Opt(IDL.Bool),
-  'description' : IDL.Opt(IDL.Text),
-  'reminderOffset' : IDL.Opt(ReminderOffset),
-});
 
 export const idlService = IDL.Service({
   '_initializeAccessControlWithSecret' : IDL.Func([IDL.Text], [], []),
   'assignCallerUserRole' : IDL.Func([IDL.Principal, UserRole], [], []),
-  'createRoutine' : IDL.Func(
-      [
-        IDL.Text,
-        IDL.Text,
-        IDL.Text,
-        IDL.Vec(DayOfWeek),
-        IDL.Bool,
-        ReminderOffset,
-      ],
-      [RoutineId],
-      [],
-    ),
-  'deleteRoutine' : IDL.Func([RoutineId], [], []),
-  'getAllRoutines' : IDL.Func([], [IDL.Vec(Routine)], ['query']),
   'getCallerUserProfile' : IDL.Func([], [IDL.Opt(UserProfile)], ['query']),
   'getCallerUserRole' : IDL.Func([], [UserRole], ['query']),
-  'getDailyRoutinesWithStatus' : IDL.Func(
-      [IDL.Text],
-      [IDL.Vec(DailyRoutineStatus)],
-      ['query'],
-    ),
-  'getRoutine' : IDL.Func([RoutineId], [IDL.Opt(Routine)], ['query']),
-  'getRoutineLogs' : IDL.Func([RoutineId], [IDL.Vec(RoutineLog)], ['query']),
   'getUserProfile' : IDL.Func(
       [IDL.Principal],
       [IDL.Opt(UserProfile)],
       ['query'],
     ),
   'isCallerAdmin' : IDL.Func([], [IDL.Bool], ['query']),
-  'logRoutine' : IDL.Func([RoutineId, IDL.Text, IDL.Text], [LogId], []),
   'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
-  'updateRoutine' : IDL.Func([RoutineId, RoutineUpdate], [], []),
-  'updateRoutineLogStatus' : IDL.Func([RoutineId, IDL.Text, IDL.Text], [], []),
 });
 
 export const idlInitArgs = [];
@@ -98,82 +37,20 @@ export const idlFactory = ({ IDL }) => {
     'user' : IDL.Null,
     'guest' : IDL.Null,
   });
-  const DayOfWeek = IDL.Nat;
-  const ReminderOffset = IDL.Record({ 'value' : IDL.Nat, 'unit' : IDL.Text });
-  const RoutineId = IDL.Nat;
-  const Timestamp = IDL.Int;
-  const Routine = IDL.Record({
-    'id' : RoutineId,
-    'repeatDays' : IDL.Vec(DayOfWeek),
-    'scheduledTime' : IDL.Text,
-    'name' : IDL.Text,
-    'createdAt' : Timestamp,
-    'reminderEnabled' : IDL.Bool,
-    'description' : IDL.Text,
-    'reminderOffset' : ReminderOffset,
-  });
   const UserProfile = IDL.Record({ 'name' : IDL.Text });
-  const DailyRoutineStatus = IDL.Record({
-    'status' : IDL.Opt(IDL.Text),
-    'routine' : Routine,
-  });
-  const LogId = IDL.Nat;
-  const RoutineLog = IDL.Record({
-    'id' : LogId,
-    'status' : IDL.Text,
-    'date' : IDL.Text,
-    'routineId' : RoutineId,
-    'loggedAt' : Timestamp,
-  });
-  const RoutineUpdate = IDL.Record({
-    'repeatDays' : IDL.Opt(IDL.Vec(DayOfWeek)),
-    'scheduledTime' : IDL.Opt(IDL.Text),
-    'name' : IDL.Opt(IDL.Text),
-    'reminderEnabled' : IDL.Opt(IDL.Bool),
-    'description' : IDL.Opt(IDL.Text),
-    'reminderOffset' : IDL.Opt(ReminderOffset),
-  });
   
   return IDL.Service({
     '_initializeAccessControlWithSecret' : IDL.Func([IDL.Text], [], []),
     'assignCallerUserRole' : IDL.Func([IDL.Principal, UserRole], [], []),
-    'createRoutine' : IDL.Func(
-        [
-          IDL.Text,
-          IDL.Text,
-          IDL.Text,
-          IDL.Vec(DayOfWeek),
-          IDL.Bool,
-          ReminderOffset,
-        ],
-        [RoutineId],
-        [],
-      ),
-    'deleteRoutine' : IDL.Func([RoutineId], [], []),
-    'getAllRoutines' : IDL.Func([], [IDL.Vec(Routine)], ['query']),
     'getCallerUserProfile' : IDL.Func([], [IDL.Opt(UserProfile)], ['query']),
     'getCallerUserRole' : IDL.Func([], [UserRole], ['query']),
-    'getDailyRoutinesWithStatus' : IDL.Func(
-        [IDL.Text],
-        [IDL.Vec(DailyRoutineStatus)],
-        ['query'],
-      ),
-    'getRoutine' : IDL.Func([RoutineId], [IDL.Opt(Routine)], ['query']),
-    'getRoutineLogs' : IDL.Func([RoutineId], [IDL.Vec(RoutineLog)], ['query']),
     'getUserProfile' : IDL.Func(
         [IDL.Principal],
         [IDL.Opt(UserProfile)],
         ['query'],
       ),
     'isCallerAdmin' : IDL.Func([], [IDL.Bool], ['query']),
-    'logRoutine' : IDL.Func([RoutineId, IDL.Text, IDL.Text], [LogId], []),
     'saveCallerUserProfile' : IDL.Func([UserProfile], [], []),
-    'updateRoutine' : IDL.Func([RoutineId, RoutineUpdate], [], []),
-    'updateRoutineLogStatus' : IDL.Func(
-        [RoutineId, IDL.Text, IDL.Text],
-        [],
-        [],
-      ),
   });
 };
 

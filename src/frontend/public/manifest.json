@@ -1,21 +1,21 @@
 {
-  "name": "Daily Routine Monitor",
-  "short_name": "Routines",
-  "description": "Monitor and track your daily, weekly, and custom routines",
+  "name": "Mind Your Mind",
+  "short_name": "MindBell",
+  "description": "A calming mindfulness bell timer for meditation and awareness.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#0ea5e9",
-  "orientation": "portrait-primary",
+  "background_color": "#f4f8fb",
+  "theme_color": "#3a8fa0",
+  "orientation": "portrait",
   "icons": [
     {
-      "src": "/assets/generated/app-icon-192.dim_192x192.png",
+      "src": "/assets/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/assets/generated/app-icon-transparent.dim_512x512.png",
+      "src": "/assets/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

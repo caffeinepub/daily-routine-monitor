@@ -10,40 +10,6 @@ import type { ActorMethod } from '@icp-sdk/core/agent';
 import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
-export interface DailyRoutineStatus {
-  'status' : [] | [string],
-  'routine' : Routine,
-}
-export type DayOfWeek = bigint;
-export type LogId = bigint;
-export interface ReminderOffset { 'value' : bigint, 'unit' : string }
-export interface Routine {
-  'id' : RoutineId,
-  'repeatDays' : Array<DayOfWeek>,
-  'scheduledTime' : string,
-  'name' : string,
-  'createdAt' : Timestamp,
-  'reminderEnabled' : boolean,
-  'description' : string,
-  'reminderOffset' : ReminderOffset,
-}
-export type RoutineId = bigint;
-export interface RoutineLog {
-  'id' : LogId,
-  'status' : string,
-  'date' : string,
-  'routineId' : RoutineId,
-  'loggedAt' : Timestamp,
-}
-export interface RoutineUpdate {
-  'repeatDays' : [] | [Array<DayOfWeek>],
-  'scheduledTime' : [] | [string],
-  'name' : [] | [string],
-  'reminderEnabled' : [] | [boolean],
-  'description' : [] | [string],
-  'reminderOffset' : [] | [ReminderOffset],
-}
-export type Timestamp = bigint;
 export interface UserProfile { 'name' : string }
 export type UserRole = { 'admin' : null } |
   { 'user' : null } |
@@ -51,29 +17,11 @@ export type UserRole = { 'admin' : null } |
 export interface _SERVICE {
   '_initializeAccessControlWithSecret' : ActorMethod<[string], undefined>,
   'assignCallerUserRole' : ActorMethod<[Principal, UserRole], undefined>,
-  'createRoutine' : ActorMethod<
-    [string, string, string, Array<DayOfWeek>, boolean, ReminderOffset],
-    RoutineId
-  >,
-  'deleteRoutine' : ActorMethod<[RoutineId], undefined>,
-  'getAllRoutines' : ActorMethod<[], Array<Routine>>,
   'getCallerUserProfile' : ActorMethod<[], [] | [UserProfile]>,
   'getCallerUserRole' : ActorMethod<[], UserRole>,
-  'getDailyRoutinesWithStatus' : ActorMethod<
-    [string],
-    Array<DailyRoutineStatus>
-  >,
-  'getRoutine' : ActorMethod<[RoutineId], [] | [Routine]>,
-  'getRoutineLogs' : ActorMethod<[RoutineId], Array<RoutineLog>>,
   'getUserProfile' : ActorMethod<[Principal], [] | [UserProfile]>,
   'isCallerAdmin' : ActorMethod<[], boolean>,
-  'logRoutine' : ActorMethod<[RoutineId, string, string], LogId>,
   'saveCallerUserProfile' : ActorMethod<[UserProfile], undefined>,
-  'updateRoutine' : ActorMethod<[RoutineId, RoutineUpdate], undefined>,
-  'updateRoutineLogStatus' : ActorMethod<
-    [RoutineId, string, string],
-    undefined
-  >,
 }
 export declare const idlService: IDL.ServiceClass;
 export declare const idlInitArgs: IDL.Type[];
